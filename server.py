@@ -98,11 +98,12 @@ def import_pdf(db, path):
         source = {"test": test_id, "result": q["result"]}
         existing = db["questions"].get(qid)
         if existing:
+            # Only a newly seen mistake resets progress; re-importing the same test must not.
             if source not in existing["sources"]:
                 existing["sources"].append(source)
-            if q["result"] == "incorrect":
-                existing["stats"]["box"] = 0
-                existing["stats"]["due"] = None
+                if q["result"] == "incorrect":
+                    existing["stats"]["box"] = 0
+                    existing["stats"]["due"] = None
             continue
         db["questions"][qid] = {
             "id": qid,
@@ -155,16 +156,21 @@ def record_answer(db, qid, correct, chosen):
     if not q:
         return None
     s = q["stats"]
+    was_due = not s["due"] or datetime.fromisoformat(s["due"]) <= datetime.now()
     s["seen"] += 1
     s["last_seen"] = now_iso()
     if correct:
         s["right"] += 1
         s["streak"] += 1
-        s["box"] = min(s["box"] + 1, len(BOX_INTERVAL_DAYS) - 1)
+        # Answering again before the question is due proves nothing new, so the
+        # box (and its next due date) only moves once the interval has passed.
+        if was_due:
+            s["box"] = min(s["box"] + 1, len(BOX_INTERVAL_DAYS) - 1)
+            s["due"] = (datetime.now() + timedelta(days=BOX_INTERVAL_DAYS[s["box"]])).isoformat(timespec="seconds")
     else:
         s["streak"] = 0
         s["box"] = 0
-    s["due"] = (datetime.now() + timedelta(days=BOX_INTERVAL_DAYS[s["box"]])).isoformat(timespec="seconds")
+        s["due"] = now_iso()
     s["history"] = (s["history"] + [{"t": s["last_seen"], "ok": correct, "chosen": chosen}])[-20:]
     return q
 

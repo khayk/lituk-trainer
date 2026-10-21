@@ -20,8 +20,9 @@ If the counts don't match the PDF header or filename, the test gets a ⚠ badge,
 ## How practice works
 
 * **Fix my mistakes**: questions you got wrong (in a test or in the app) that you haven't mastered yet.
-* **Spaced review**: a Leitner system. A right answer moves a question up a box (next review in 1, 2, 4, 8… days);
-  a wrong answer sends it back to box 0. Box 3+ counts as **mastered**.
+* **Spaced review**: a Leitner system. A right answer on a question that is due moves it up a box (next review in
+  1, 2, 4, 8… days); answering it again before then is recorded but doesn't move it. A wrong answer always sends it
+  back to box 0. Box 3+ counts as **mastered**, so mastery takes right answers on at least three separate days.
 * **Mock exam**: 24 random questions, 45 minutes, 75% to pass, results only at the end.
 * **Weakest / Flagged / Everything**, plus per-test **Mistakes** and **Retake** buttons.
 

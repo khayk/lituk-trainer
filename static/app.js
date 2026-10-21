@@ -82,7 +82,7 @@ async function reload() {
 
 const allQs = () => Object.values(DB.questions);
 const masteredBox = () => DB.config.mastered_box;
-const wasWrongInTest = q => q.sources.some(s => s.result === "incorrect");
+const wasWrongInTest = (q, testId) => q.sources.some(s => s.result === "incorrect" && (!testId || s.test === testId));
 const wasWrongHere = q => q.stats.history.some(h => !h.ok);
 const isMastered = q => q.stats.box >= masteredBox();
 const isDue = q => !q.stats.due || new Date(q.stats.due) <= new Date();
@@ -111,7 +111,7 @@ function weakness(q) {
 const MODES = {
   fix: {
     title: "Fix my mistakes",
-    desc: "Questions you got wrong in a test or here, until you have answered each one right 3 times in a row. Wrong answers come back at the end of the round.",
+    desc: "Questions you got wrong in a test or here, until they are mastered (right on 3 separate days). Wrong answers come back at the end of the round.",
     pool: () => shuffle(allQs().filter(needsFix)).sort((a, b) => a.stats.box - b.stats.box),
     requeue: true, size: 20,
   },
@@ -180,6 +180,10 @@ function renderHome() {
   const qs = allQs();
   const tests = Object.values(DB.tests).sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
   const mastered = qs.filter(isMastered).length;
+  // Partial credit: each box up to the mastery box counts, so progress shows after one quiz.
+  const progress = qs.length ? qs.reduce((n, q) => n + Math.min(q.stats.box, masteredBox()), 0) / (qs.length * masteredBox()) : 0;
+  const byLevel = { Mastered: 0, Learning: 0, New: 0, "To fix": 0 };
+  qs.forEach(q => byLevel[level(q).label]++);
   const toFix = qs.filter(needsFix).length;
   const due = qs.filter(isDue).length;
   const exams = DB.sessions.filter(s => s.mode === "exam").slice(-5);
@@ -209,12 +213,18 @@ function renderHome() {
         ${tile(qs.length, "questions in your bank")}
         ${tile(toFix, "mistakes still to fix")}
         ${tile(due, "due for review now")}
-        ${tile(`${Math.round(mastered / qs.length * 100)}%`, `mastered (${mastered} of ${qs.length})`)}
+        ${tile(`${Math.round(progress * 100)}%`, `progress to mastery · ${mastered} of ${qs.length} mastered`)}
         ${tile(examAvg === null ? "–" : `${Math.round(examAvg * 100)}%`,
               examAvg === null ? "no mock exams yet" : `avg of last ${exams.length} mock exams · ${examPasses} passed`)}
       </div>
-      <div class="bar ok" style="margin-top:12px" title="Mastered" role="progressbar" aria-valuenow="${mastered}" aria-valuemax="${qs.length}">
-        <span style="width:${mastered / qs.length * 100}%"></span>
+      <div class="stack" style="margin-top:12px" role="img"
+           aria-label="${Object.entries(byLevel).map(([k, v]) => `${k}: ${v}`).join(", ")}">
+        ${Object.entries(byLevel).filter(([, v]) => v).map(([k, v]) =>
+          `<span class="seg-${k.replace(" ", "")}" style="flex:${v}" title="${k}: ${v}"></span>`).join("")}
+      </div>
+      <div class="legend small">
+        ${Object.entries(byLevel).map(([k, v]) => `<span><i class="seg-${k.replace(" ", "")}"></i>${k} <b>${v}</b></span>`).join("")}
+        <span class="muted">A question is mastered after 3 right answers spaced out over days (today, then 1 and 2 days later); a wrong answer starts it over.</span>
       </div>
     </section>
 
@@ -233,7 +243,7 @@ function renderHome() {
           <tbody>
           ${tests.map(t => {
             const tq = t.questions.map(id => DB.questions[id]).filter(Boolean);
-            const wrong = tq.filter(wasWrongInTest);
+            const wrong = tq.filter(q => wasWrongInTest(q, t.id));
             const left = wrong.filter(q => !isMastered(q)).length;
             const passed = t.score / t.total >= PASS_RATIO;
             return `<tr>
@@ -273,7 +283,7 @@ function renderHome() {
   });
   $$("[data-test-mistakes]").forEach(btn => btn.onclick = () => {
     const t = DB.tests[btn.dataset.testMistakes];
-    const ids = t.questions.filter(id => DB.questions[id] && wasWrongInTest(DB.questions[id]));
+    const ids = t.questions.filter(id => DB.questions[id] && wasWrongInTest(DB.questions[id], t.id));
     startCustom(`${t.title} – mistakes`, ids, { requeue: true });
   });
   $$("[data-test-retake]").forEach(btn => btn.onclick = () => {

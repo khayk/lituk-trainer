@@ -55,19 +55,25 @@ h3 { font-size: 1rem; }
 .topbar nav a { padding: 6px 10px; border-radius: 8px; text-decoration: none; color: var(--muted); font-size: .95rem; }
 .topbar nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
-main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+main { max-width: 1080px; margin: 0 auto; padding: 24px 16px 64px; }
 section { margin-bottom: 32px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
 .grid { display: grid; gap: 12px; }
-.tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-.modes { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.tiles { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 860px) { .modes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .modes { grid-template-columns: minmax(0, 1fr); } }
 .tile .value { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .tile .label { color: var(--muted); font-size: .875rem; }
 
 .mode { display: flex; flex-direction: column; gap: 8px; }
 .mode p { margin: 0; color: var(--muted); font-size: .9rem; flex: 1; }
-.mode .row { display: flex; gap: 8px; align-items: center; }
+.mode h3 { display: flex; align-items: center; gap: 8px; }
+.mode .row { display: flex; gap: 8px; align-items: stretch; }
+.mode .row select { flex: 1 1 auto; min-width: 0; }
+.mode .row button { flex: 0 0 auto; min-width: 88px; }
+.mode .row button:only-child { margin-left: auto; }
 
 button, .btn {
   font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border);
@@ -91,6 +97,15 @@ textarea { width: 100%; min-height: 70px; resize: vertical; }
 .bar { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
 .bar.ok > span { background: var(--ok); }
+
+.stack { display: flex; gap: 2px; height: 10px; border-radius: 99px; overflow: hidden; background: var(--surface-2); }
+.stack span { display: block; min-width: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; align-items: center; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.seg-Mastered { background: var(--ok); }
+.seg-Learning { background: var(--warn); }
+.seg-Tofix { background: var(--bad); }
+.seg-New { background: var(--border); }
 
 table { width: 100%; border-collapse: collapse; font-size: .95rem; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
