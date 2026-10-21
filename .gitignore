@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Quiz app data: personal progress and automatic backups, rebuilt from the PDFs
+data/
+
+# Test result PDFs (inputs, imported into data/db.json)
+*.pdf
+
+# macOS
+.DS_Store
