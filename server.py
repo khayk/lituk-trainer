@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local Life in the UK quiz app.
 
-    python3 server.py              # serves http://127.0.0.1:8765, PDFs from ../
+    python3 server.py              # serves http://127.0.0.1:8765, PDFs from ./pdfs/
     python3 server.py --port 9000 --pdf-dir ~/somewhere --no-browser
 
 All data lives in data/db.json next to this file.
@@ -35,7 +35,8 @@ BOX_INTERVAL_DAYS = [0, 1, 2, 4, 8, 16, 32]
 MASTERED_BOX = 3
 
 lock = threading.Lock()
-PDF_DIR = APP_DIR.parent
+DEFAULT_PDF_DIR = APP_DIR / "pdfs"
+PDF_DIR = DEFAULT_PDF_DIR
 
 
 # ---------------------------------------------------------------- storage
@@ -368,10 +369,11 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--pdf-dir", default=str(APP_DIR.parent), help="folder with the test PDFs")
+    ap.add_argument("--pdf-dir", default=str(DEFAULT_PDF_DIR), help="folder with the test PDFs (default: pdfs/ next to server.py)")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
     PDF_DIR = Path(args.pdf_dir).expanduser().resolve()
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
 
     with lock:
         db = load_db()

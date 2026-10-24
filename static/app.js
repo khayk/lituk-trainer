@@ -90,6 +90,16 @@ const needsFix = q => (wasWrongInTest(q) || wasWrongHere(q)) && !isMastered(q);
 const accuracy = q => (q.stats.seen ? q.stats.right / q.stats.seen : null);
 const isMulti = q => q.correct.length > 1;
 
+// The box a question starts in on import (see server.py): 1 if you got it right in a PDF test.
+const startBox = q => (wasWrongInTest(q) || q.sources.every(s => s.result === "manual") ? 0 : 1);
+
+// 0 -> 1 progress earned by practising in the app; the head start from PDF results doesn't count.
+function masteryProgress(q) {
+  if (isMastered(q)) return 1;
+  const start = startBox(q);
+  return Math.min(1, Math.max(0, (q.stats.box - start) / (masteredBox() - start)));
+}
+
 function level(q) {
   if (isMastered(q)) return { label: "Mastered", cls: "ok" };
   if (q.stats.box === 0 && (wasWrongInTest(q) || wasWrongHere(q))) return { label: "To fix", cls: "bad" };
@@ -180,8 +190,7 @@ function renderHome() {
   const qs = allQs();
   const tests = Object.values(DB.tests).sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
   const mastered = qs.filter(isMastered).length;
-  // Partial credit: each box up to the mastery box counts, so progress shows after one quiz.
-  const progress = qs.length ? qs.reduce((n, q) => n + Math.min(q.stats.box, masteredBox()), 0) / (qs.length * masteredBox()) : 0;
+  const progress = qs.length ? qs.reduce((n, q) => n + masteryProgress(q), 0) / qs.length : 0;
   const byLevel = { Mastered: 0, Learning: 0, New: 0, "To fix": 0 };
   qs.forEach(q => byLevel[level(q).label]++);
   const toFix = qs.filter(needsFix).length;

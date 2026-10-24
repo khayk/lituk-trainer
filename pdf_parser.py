@@ -20,7 +20,7 @@ TEXT_RE = re.compile(
 PAGE_RE = re.compile(r"<page ")
 TAG_RE = re.compile(r"<[^>]+>")
 SKIP_RE = re.compile(r"^\(?https?://\S*\)?$")
-FILENAME_RE = re.compile(r"^(?P<name>.+?-(?P<num>\d+))(?:-(?P<errors>\d+)e)?$", re.I)
+FILENAME_RE = re.compile(r"^(?P<name>(?P<kind>.+?)-(?P<num>\d+))(?:-(?P<errors>\d+)e)?$", re.I)
 
 
 class ParseError(Exception):
@@ -135,7 +135,8 @@ def parse_pdf(pdf_path):
 
     m = FILENAME_RE.match(pdf_path.stem)
     test_id = (m["name"] if m else pdf_path.stem).lower()
-    title = f"Test {m['num']}" if m else pdf_path.stem
+    # "test-11-4e" -> "Test 11", "exam-17-2e" -> "Exam 17"
+    title = f"{m['kind'].replace('-', ' ').capitalize()} {m['num']}" if m else pdf_path.stem
     expected_errors = int(m["errors"]) if m and m["errors"] else None
 
     warnings = []

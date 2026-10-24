@@ -8,11 +8,11 @@ A local quiz app built from your lifeintheuktestweb.co.uk result PDFs.
 
 It opens http://127.0.0.1:8765. Requires Python 3 and poppler (`pdftohtml`, `brew install poppler`); nothing else.
 
-Options: `--port 9000`, `--pdf-dir /some/folder` (default: the folder above `quiz-app`), `--no-browser`.
+Options: `--port 9000`, `--pdf-dir /some/folder` (default: `quiz-app/pdfs/`), `--no-browser`.
 
 ## Adding tests
 
-Put new `test-<n>-<errors>e.pdf` files in the PDF folder. They are imported automatically when the server starts, or you can
+Put new `test-<n>-<errors>e.pdf` or `exam-<n>-<errors>e.pdf` files in `quiz-app/pdfs/` (any `<name>-<n>-<errors>e.pdf` works; the prefix becomes the label, e.g. "Exam 17"). They are imported automatically when the server starts, or you can
 click **Scan folder for new PDFs** (or drag PDFs onto the dashboard). Every question in the test is imported:
 bold options become the correct answers, and the questions you got wrong are marked as mistakes.
 If the counts don't match the PDF header or filename, the test gets a ⚠ badge, and you can fix the question in the question bank.
