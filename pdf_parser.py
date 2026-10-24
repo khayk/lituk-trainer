@@ -134,9 +134,10 @@ def parse_pdf(pdf_path):
         raise ParseError("no questions found - is this a lifeintheuktestweb results PDF?")
 
     m = FILENAME_RE.match(pdf_path.stem)
-    test_id = (m["name"] if m else pdf_path.stem).lower()
+    # Leading zeros are dropped so "test-01-1e" and "test-1-1e" are the same test.
+    test_id = f"{m['kind'].lower()}-{int(m['num'])}" if m else pdf_path.stem.lower()
     # "test-11-4e" -> "Test 11", "exam-17-2e" -> "Exam 17"
-    title = f"{m['kind'].replace('-', ' ').capitalize()} {m['num']}" if m else pdf_path.stem
+    title = f"{m['kind'].replace('-', ' ').capitalize()} {int(m['num'])}" if m else pdf_path.stem
     expected_errors = int(m["errors"]) if m and m["errors"] else None
 
     warnings = []
