@@ -245,31 +245,8 @@ function renderHome() {
     </section>
 
     <section>
-      <h2>Your tests</h2>
-      <div class="card table-wrap">
-        <table>
-          <thead><tr><th>Test</th><th class="num">Score</th><th class="num hide-sm">Mistakes left</th><th class="hide-sm">Imported</th><th></th></tr></thead>
-          <tbody>
-          ${tests.map(t => {
-            const tq = t.questions.map(id => DB.questions[id]).filter(Boolean);
-            const wrong = tq.filter(q => wasWrongInTest(q, t.id));
-            const left = wrong.filter(q => !isMastered(q)).length;
-            const passed = t.score / t.total >= PASS_RATIO;
-            return `<tr>
-              <td><strong>${esc(t.title)}</strong> <span class="muted small">${esc(t.file)}</span>
-                ${t.warnings?.length ? `<span class="badge warn" title="${esc(t.warnings.join("; "))}">⚠ check</span>` : ""}</td>
-              <td class="num">${t.score}/${t.total} <span class="badge ${passed ? "ok" : "bad"}">${passed ? "✓ pass" : "✗ fail"}</span></td>
-              <td class="num hide-sm">${left} of ${wrong.length}</td>
-              <td class="hide-sm muted small">${fmtDate(t.imported)}</td>
-              <td style="white-space:nowrap;text-align:right">
-                <button class="small" data-test-mistakes="${t.id}" ${wrong.length ? "" : "disabled"}>Mistakes</button>
-                <button class="small" data-test-retake="${t.id}">Retake</button>
-              </td>
-            </tr>`;
-          }).join("")}
-          </tbody>
-        </table>
-      </div>
+      <h2>Your tests <span class="badge">${tests.length}</span></h2>
+      <div class="card table-wrap" id="tests-table"></div>
     </section>
 
     ${importSection()}
@@ -290,15 +267,7 @@ function renderHome() {
     const size = $(`[data-size="${key}"]`)?.value ?? MODES[key].size;
     startQuiz(key, size === "all" ? Infinity : Number(size));
   });
-  $$("[data-test-mistakes]").forEach(btn => btn.onclick = () => {
-    const t = DB.tests[btn.dataset.testMistakes];
-    const ids = t.questions.filter(id => DB.questions[id] && wasWrongInTest(DB.questions[id], t.id));
-    startCustom(`${t.title} – mistakes`, ids, { requeue: true });
-  });
-  $$("[data-test-retake]").forEach(btn => btn.onclick = () => {
-    const t = DB.tests[btn.dataset.testRetake];
-    startCustom(`${t.title} – retake`, t.questions.filter(id => DB.questions[id]), { exam: true });
-  });
+  drawTestsTable();
   $("#rescan-force").onclick = () => scan(true);
   $("#reset-progress").onclick = async () => {
     if (!confirm("Reset all progress and quiz history? Questions are kept, and a backup is saved first.")) return;
@@ -308,6 +277,83 @@ function renderHome() {
     renderHome();
   };
   bindImport();
+}
+
+// ------------------------------------------------------------------ tests table
+
+const TEST_COLUMNS = [
+  { key: "test", label: "Test" },
+  { key: "score", label: "Score", cls: "num" },
+  { key: "left", label: "Mistakes left", cls: "num hide-sm" },
+  { key: "imported", label: "Imported", cls: "hide-sm" },
+];
+
+const TEST_SORT = (() => {
+  try { return JSON.parse(localStorage.getItem("testSort")) || { key: "test", dir: 1 }; }
+  catch (e) { return { key: "test", dir: 1 }; }
+})();
+
+const byTitle = (a, b) => a.t.title.localeCompare(b.t.title, undefined, { numeric: true });
+const TEST_SORTERS = {
+  test: byTitle,
+  score: (a, b) => a.t.score / a.t.total - b.t.score / b.t.total,
+  left: (a, b) => a.left - b.left || a.wrong - b.wrong,
+  imported: (a, b) => (a.t.imported || "").localeCompare(b.t.imported || ""),
+};
+
+function drawTestsTable() {
+  const box = $("#tests-table");
+  if (!box) return;
+  const rows = Object.values(DB.tests).map(t => {
+    const wrongQs = t.questions.map(id => DB.questions[id]).filter(q => q && wasWrongInTest(q, t.id));
+    return { t, wrong: wrongQs.length, left: wrongQs.filter(q => !isMastered(q)).length };
+  });
+  // Ties always fall back to test order, whichever direction the column is sorted.
+  rows.sort((a, b) => TEST_SORTERS[TEST_SORT.key](a, b) * TEST_SORT.dir || byTitle(a, b));
+
+  const header = TEST_COLUMNS.map(c => {
+    const active = c.key === TEST_SORT.key;
+    const aria = active ? (TEST_SORT.dir > 0 ? "ascending" : "descending") : "none";
+    return `<th class="${c.cls || ""}" aria-sort="${aria}">
+      <button class="th-sort ${active ? "active" : ""}" data-sort="${c.key}">${c.label}<span class="arrow" aria-hidden="true">${active ? (TEST_SORT.dir > 0 ? "▲" : "▼") : "↕"}</span></button></th>`;
+  }).join("");
+
+  box.innerHTML = `<table>
+    <thead><tr>${header}<th></th></tr></thead>
+    <tbody>${rows.map(({ t, wrong, left }) => {
+      const passed = t.score / t.total >= PASS_RATIO;
+      return `<tr>
+        <td><strong>${esc(t.title)}</strong> <span class="muted small">${esc(t.file)}</span>
+          ${t.warnings?.length ? `<span class="badge warn" title="${esc(t.warnings.join("; "))}">⚠ check</span>` : ""}</td>
+        <td class="num">${t.score}/${t.total} <span class="badge ${passed ? "ok" : "bad"}">${passed ? "✓ pass" : "✗ fail"}</span></td>
+        <td class="num hide-sm">${left} of ${wrong}</td>
+        <td class="hide-sm muted small">${fmtDate(t.imported)}</td>
+        <td style="white-space:nowrap;text-align:right">
+          <button class="small" data-test-mistakes="${t.id}" ${wrong ? "" : "disabled"}>Mistakes</button>
+          <button class="small" data-test-retake="${t.id}">Retake</button>
+        </td>
+      </tr>`;
+    }).join("")}</tbody>
+  </table>`;
+
+  $$("[data-sort]", box).forEach(btn => btn.onclick = () => {
+    const key = btn.dataset.sort;
+    // Same column flips the direction; a new column starts ascending.
+    TEST_SORT.dir = TEST_SORT.key === key ? -TEST_SORT.dir : 1;
+    TEST_SORT.key = key;
+    try { localStorage.setItem("testSort", JSON.stringify(TEST_SORT)); } catch (e) { /* ignore */ }
+    drawTestsTable();
+    $(`[data-sort="${key}"]`, box)?.focus();
+  });
+  $$("[data-test-mistakes]", box).forEach(btn => btn.onclick = () => {
+    const t = DB.tests[btn.dataset.testMistakes];
+    const ids = t.questions.filter(id => DB.questions[id] && wasWrongInTest(DB.questions[id], t.id));
+    startCustom(`${t.title} – mistakes`, ids, { requeue: true });
+  });
+  $$("[data-test-retake]", box).forEach(btn => btn.onclick = () => {
+    const t = DB.tests[btn.dataset.testRetake];
+    startCustom(`${t.title} – retake`, t.questions.filter(id => DB.questions[id]), { exam: true });
+  });
 }
 
 function tile(value, label) {
