@@ -280,7 +280,7 @@ function renderHome() {
         <a class="btn small" href="/api/export">Download backup</a>
         <button class="small" id="rescan-force">Re-import all PDFs</button>
         <button class="small danger" id="reset-progress">Reset all progress</button>
-        <span class="muted small">Stored in <code>quiz-app/data/db.json</code>; a backup is taken before every import or reset.</span>
+        <span class="muted small">Stored in <code>data/db.json</code>; a backup is taken before every import or reset.</span>
       </div>
     </section>
   `;
