@@ -49,6 +49,16 @@ Everything is in `data/db.json` (plain JSON). A copy goes to `data/backups/` bef
 (the last 20 are kept). **Download backup** on the dashboard exports it. `data/` and `pdfs/` are git-ignored, so your
 progress and PDFs never end up in the repository.
 
+## Development
+
+Run the tests from the repository root (standard library only, about 2 seconds):
+
+    python3 -m unittest
+
+They cover the PDF parser (against a synthetic results page in `tests/fixtures/`), import and merging, spaced
+repetition, the exam-date schedule, the right/wrong counters and the HTTP API. If you have PDFs in `pdfs/`, one extra
+test checks that every one of them imports cleanly; without them it is skipped. GitHub runs the suite on every push.
+
 ## License
 
 [AGPL-3.0](LICENSE)

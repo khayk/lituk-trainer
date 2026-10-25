@@ -27,9 +27,9 @@ class ParseError(Exception):
     pass
 
 
-def _fragments(pdf_path):
+def pdf_to_xml(pdf_path):
     try:
-        out = subprocess.run(
+        return subprocess.run(
             ["pdftohtml", "-xml", "-i", "-stdout", "-q", str(pdf_path)],
             capture_output=True, text=True, check=True,
         ).stdout
@@ -38,8 +38,10 @@ def _fragments(pdf_path):
     except subprocess.CalledProcessError as e:
         raise ParseError(f"pdftohtml failed: {e.stderr.strip()}")
 
+
+def _fragments(xml):
     # Split by page so that each page can be sorted top-to-bottom.
-    pages = PAGE_RE.split(out)[1:]
+    pages = PAGE_RE.split(xml)[1:]
     for page_no, page in enumerate(pages):
         frags = []
         for m in TEXT_RE.finditer(page):
@@ -61,8 +63,13 @@ def _join(parts):
 
 
 def parse_pdf(pdf_path):
-    pdf_path = Path(pdf_path)
-    frags = list(_fragments(pdf_path))
+    return parse_xml(pdf_to_xml(pdf_path), Path(pdf_path).name)
+
+
+def parse_xml(xml, filename):
+    """Parse `pdftohtml -xml` output; `filename` (e.g. "test-11-4e.pdf") names the test."""
+    pdf_path = Path(filename)
+    frags = list(_fragments(xml))
     full_text = " ".join(f["text"] for f in frags)
 
     score = total = None
