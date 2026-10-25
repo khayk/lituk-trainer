@@ -45,10 +45,15 @@ function fmtDate(iso) {
     d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const calendarDaysFromToday = d => Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
+
 function relDays(iso) {
   if (!iso) return "now";
-  const days = Math.round((new Date(iso) - Date.now()) / 86400000);
-  if (days <= 0) return "now";
+  const due = new Date(iso);
+  if (due <= new Date()) return "now";
+  const days = calendarDaysFromToday(due);
+  if (days === 0) return `later today (${due.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })})`;
   return days === 1 ? "tomorrow" : `in ${days} days`;
 }
 
@@ -118,7 +123,37 @@ function weakness(q) {
   return q.stats.box * 10 + (acc === null ? (wasWrongInTest(q) ? 0 : 5) : acc * 9);
 }
 
+// ------------------------------------------------------------------ exam date
+
+function examInfo() {
+  const iso = DB.settings?.exam_date;
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  const day = new Date(y, m - 1, d);
+  // Study days left: today up to the day before the exam.
+  return { iso, day, daysLeft: calendarDaysFromToday(day), active: calendarDaysFromToday(day) > 0 };
+}
+
+const stepsLeft = q => (isMastered(q) ? 0 : masteredBox() - q.stats.box);
+
+async function saveSettings(patch) {
+  try {
+    DB.settings = await api("PATCH", "settings", patch);
+    await reload();
+    renderHome();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 const MODES = {
+  plan: {
+    title: "Exam plan",
+    desc: "Built around your test date: asks what's due, least-known first, and spaces the reviews so every question can be mastered before the day.",
+    pool: () => shuffle(allQs().filter(isDue)).sort((a, b) => stepsLeft(b) - stepsLeft(a)),
+    requeue: true, size: 20,
+    available: () => !!examInfo()?.active,
+  },
   fix: {
     title: "Fix my mistakes",
     desc: "Questions you got wrong in a test or here, until they are mastered (right on 3 separate days). Wrong answers come back at the end of the round.",
@@ -211,13 +246,14 @@ function renderHome() {
   }
 
   const counts = {
-    fix: toFix, review: due, exam: qs.length, weak: qs.length,
+    plan: due, fix: toFix, review: due, exam: qs.length, weak: qs.length,
     flagged: qs.filter(q => q.flagged).length, all: qs.length,
   };
 
   app.innerHTML = `
     <section>
       <h1>Life in the UK – practice</h1>
+      ${examCard(qs)}
       <div class="grid tiles">
         ${tile(qs.length, "questions in your bank")}
         ${tile(toFix, "mistakes still to fix")}
@@ -240,7 +276,8 @@ function renderHome() {
     <section>
       <h2>Start a quiz</h2>
       <div class="grid modes">
-        ${Object.entries(MODES).map(([key, m]) => modeCard(key, m, counts[key])).join("")}
+        ${Object.entries(MODES).filter(([, m]) => !m.available || m.available())
+          .map(([key, m]) => modeCard(key, m, counts[key])).join("")}
       </div>
     </section>
 
@@ -256,6 +293,7 @@ function renderHome() {
       <div class="card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <a class="btn small" href="/api/export">Download backup</a>
         <button class="small" id="rescan-force">Re-import all PDFs</button>
+        <button class="small" id="exam-date-open">${examInfo() ? "Change test date" : "Set test date"}</button>
         <button class="small danger" id="reset-progress">Reset all progress</button>
         <span class="muted small">Stored in <code>data/db.json</code>; a backup is taken before every import or reset.</span>
       </div>
@@ -268,6 +306,7 @@ function renderHome() {
     startQuiz(key, size === "all" ? Infinity : Number(size));
   });
   drawTestsTable();
+  bindExamCard();
   $("#rescan-force").onclick = () => scan(true);
   $("#reset-progress").onclick = async () => {
     if (!confirm("Reset all progress and quiz history? Questions are kept, and a backup is saved first.")) return;
@@ -277,6 +316,79 @@ function renderHome() {
     renderHome();
   };
   bindImport();
+}
+
+// ------------------------------------------------------------------ exam card
+
+const fmtDay = d => d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+
+function examDateForm(info) {
+  const tomorrow = new Date(Date.now() + 86400000);
+  const min = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+  return `<form class="exam-form" id="exam-form">
+    <input type="date" id="exam-date" required min="${min}" value="${info?.active ? info.iso : ""}" aria-label="Test date">
+    <button type="submit" class="primary">Save</button>
+    ${info ? `<button type="button" id="exam-clear">Clear date</button>` : `<button type="button" id="exam-dismiss">Not booked yet</button>`}
+  </form>`;
+}
+
+function examCard(qs) {
+  const info = examInfo();
+  const dismissed = DB.settings?.exam_prompt_dismissed;
+  if (!info && dismissed) return "";
+  if (!info) {
+    return `<div class="card exam-card">
+      <h2>When is your Life in the UK test?</h2>
+      <p class="muted">Set the date and the app builds an <b>Exam plan</b>: reviews are spaced so every question can be mastered before the day.</p>
+      ${examDateForm(null)}
+    </div>`;
+  }
+  if (!info.active) {
+    return `<div class="card exam-card">
+      <h2>${info.daysLeft === 0 ? "Your test is today – good luck! 🍀" : `Your test was on ${fmtDay(info.day)}`}</h2>
+      <p class="muted">Practice is back on the normal spaced schedule. Booked another one? Set the new date.</p>
+      ${examDateForm(info)}
+    </div>`;
+  }
+  const toMaster = qs.filter(q => !isMastered(q));
+  const needed = toMaster.reduce((n, q) => n + stepsLeft(q), 0);
+  const perDay = Math.ceil(needed / info.daysLeft);
+  const dueNow = qs.filter(isDue).length;
+  return `<div class="card exam-card">
+    <div class="exam-head">
+      <div>
+        <h2>Your test is ${info.daysLeft === 1 ? "tomorrow" : `in ${info.daysLeft} days`}</h2>
+        <div class="muted">${fmtDay(info.day)} · ${info.daysLeft} study day${info.daysLeft === 1 ? "" : "s"} left, including today</div>
+      </div>
+      <button class="primary" id="plan-start" ${dueNow ? "" : "disabled"}>Start today's plan</button>
+    </div>
+    <div class="exam-stats">
+      <div><b>${toMaster.length}</b><span>questions still to master</span></div>
+      <div><b>${needed}</b><span>right answers needed in total</span></div>
+      <div><b>~${perDay}</b><span>right answers a day to finish in time</span></div>
+      <div><b>${dueNow}</b><span>due now</span></div>
+    </div>
+    <p class="small muted" style="margin:10px 0 0">
+      Each right answer on a due question moves it one step; reviews are spaced to fit before ${fmtDay(info.day)}.
+      Work through what's due each day ${dueNow ? "" : "– nothing is due right now, come back later"}.
+      <a href="#" id="exam-change">Change date</a>
+    </p>
+    <div id="exam-change-form" hidden style="margin-top:10px">${examDateForm(info)}</div>
+  </div>`;
+}
+
+function bindExamCard() {
+  $("#plan-start")?.addEventListener("click", () => startQuiz("plan", MODES.plan.size));
+  $("#exam-change")?.addEventListener("click", e => { e.preventDefault(); $("#exam-change-form").hidden = false; });
+  $("#exam-form")?.addEventListener("submit", e => { e.preventDefault(); saveSettings({ exam_date: $("#exam-date").value }); });
+  $("#exam-clear")?.addEventListener("click", () => saveSettings({ exam_date: null }));
+  $("#exam-dismiss")?.addEventListener("click", () => saveSettings({ exam_prompt_dismissed: true }));
+  $("#exam-date-open").onclick = () => {
+    if (!examInfo() && DB.settings?.exam_prompt_dismissed) return saveSettings({ exam_prompt_dismissed: false });
+    const form = $("#exam-change-form");
+    if (form) form.hidden = false;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 }
 
 // ------------------------------------------------------------------ tests table
@@ -512,6 +624,7 @@ function renderQuiz() {
       ${ok ? "" : `<div>Answer: <b>${q.correct.map(i => esc(q.options[i])).join(" + ")}</b></div>`}
       ${q.explanation ? `<div class="small" style="margin-top:6px">${esc(q.explanation)}</div>` : ""}
       ${q.note ? `<div class="small" style="margin-top:6px">📝 ${esc(q.note)}</div>` : ""}
+      ${progressNote(QUIZ.change?.[pos], ok)}
     </div>`;
   }
 
@@ -587,6 +700,22 @@ function renderQuiz() {
   }
 }
 
+function progressNote(change, ok) {
+  if (!change) return "";
+  const M = masteredBox();
+  let text;
+  if (!ok) {
+    text = `Back to the start (step 0 of ${M})${QUIZ.requeue ? " · you'll get it again at the end of this round" : ""}`;
+  } else if (change.after > change.before) {
+    text = change.after >= M && change.before < M
+      ? `🎉 Mastered · one more check ${relDays(change.due)}`
+      : `Step ${Math.min(change.after, M)} of ${M} · next review ${relDays(change.due)}`;
+  } else {
+    text = `Not due yet, so it stays at step ${Math.min(change.after, M)} of ${M} · next counts ${relDays(change.due)}`;
+  }
+  return `<div class="small progress-note">${text}</div>`;
+}
+
 function choose(optIdx) {
   const pos = QUIZ.pos;
   if (QUIZ.checked[pos]) return;
@@ -610,10 +739,14 @@ async function check() {
   if (!sel.length) return;
   const ok = sameSet(sel, q.correct);
   QUIZ.checked[pos] = true;
-  if (!(q.id in QUIZ.firstResult)) QUIZ.firstResult[q.id] = { ok, chosen: sel };
+  // Only the first answer to a question in a session goes into its lifetime counters.
+  const first = !(q.id in QUIZ.firstResult);
+  if (first) QUIZ.firstResult[q.id] = { ok, chosen: sel };
   if (!ok && QUIZ.requeue) QUIZ.queue.push(q.id);
   try {
-    DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel });
+    const before = q.stats.box;
+    DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel, count: first });
+    QUIZ.change = { ...QUIZ.change, [pos]: { before, after: DB.questions[q.id].stats.box, due: DB.questions[q.id].stats.due } };
   } catch (e) {
     toast("Could not save answer: " + e.message);
   }
@@ -655,7 +788,7 @@ async function submitExam(timeUp = false) {
     const ok = sameSet(sel, q.correct);
     QUIZ.firstResult[q.id] = { ok, chosen: sel };
     try {
-      DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel });
+      DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel, count: true });
     } catch (e) { /* keep going, results still shown */ }
   }
   finish();
@@ -723,7 +856,17 @@ function reviewItem(q, r) {
 
 // ------------------------------------------------------------------ question bank
 
-const BANK = { search: "", filter: "all", sort: "test" };
+const BANK = { search: "", filter: "all", sort: "test", dir: 1 };
+
+const countsOf = q => q.counts || { right: 0, wrong: 0 };
+// State order for sorting: what needs work first.
+const LEVEL_ORDER = { "To fix": 0, Learning: 1, New: 2, Mastered: 3 };
+
+// Each sort's natural first direction: counts start with the biggest numbers.
+const BANK_SORTS = [
+  ["test", "Test order", 1], ["state", "State", 1], ["right", "Times right", -1], ["wrong", "Times wrong", -1],
+  ["weak", "Weakest first", 1], ["recent", "Recently practised", 1], ["alpha", "A–Z", 1],
+];
 
 function renderBank(preset) {
   if (preset) BANK.filter = decodeURIComponent(preset);
@@ -744,9 +887,9 @@ function renderBank(preset) {
         </optgroup>
       </select>
       <select id="bank-sort" aria-label="Sort">
-        ${[["test", "Test order"], ["weak", "Weakest first"], ["recent", "Recently practised"], ["alpha", "A–Z"]]
-          .map(([v, l]) => `<option value="${v}" ${BANK.sort === v ? "selected" : ""}>${l}</option>`).join("")}
+        ${BANK_SORTS.map(([v, l]) => `<option value="${v}" ${BANK.sort === v ? "selected" : ""}>Sort: ${l}</option>`).join("")}
       </select>
+      <button id="bank-dir" title="Reverse the order" aria-label="Reverse the order"></button>
     </div>
     <div class="muted small" id="bank-count" style="margin-bottom:8px"></div>
     <div id="bank-list"></div>
@@ -754,7 +897,12 @@ function renderBank(preset) {
 
   $("#bank-search").oninput = e => { BANK.search = e.target.value; drawBankList(); };
   $("#bank-filter").onchange = e => { BANK.filter = e.target.value; drawBankList(); };
-  $("#bank-sort").onchange = e => { BANK.sort = e.target.value; drawBankList(); };
+  $("#bank-sort").onchange = e => {
+    BANK.sort = e.target.value;
+    BANK.dir = BANK_SORTS.find(([v]) => v === BANK.sort)[2];
+    drawBankList();
+  };
+  $("#bank-dir").onclick = () => { BANK.dir = -BANK.dir; drawBankList(); };
   $("#add-q").onclick = () => editQuestion(null);
   drawBankList();
 }
@@ -780,17 +928,23 @@ function bankFiltered() {
     }
     return true;
   });
+  const byTest = (a, b) => (testOrder[a.id] ?? 1e9) - (testOrder[b.id] ?? 1e9);
   const sorters = {
-    test: (a, b) => (testOrder[a.id] ?? 1e9) - (testOrder[b.id] ?? 1e9),
+    test: byTest,
+    state: (a, b) => LEVEL_ORDER[level(a).label] - LEVEL_ORDER[level(b).label],
+    right: (a, b) => countsOf(a).right - countsOf(b).right,
+    wrong: (a, b) => countsOf(a).wrong - countsOf(b).wrong,
     weak: (a, b) => weakness(a) - weakness(b),
     recent: (a, b) => (b.stats.last_seen || "").localeCompare(a.stats.last_seen || ""),
     alpha: (a, b) => a.text.localeCompare(b.text),
   };
-  return qs.sort(sorters[BANK.sort]);
+  // Ties keep test order whichever way the list is sorted.
+  return qs.sort((a, b) => sorters[BANK.sort](a, b) * BANK.dir || byTest(a, b));
 }
 
 function drawBankList() {
   const qs = bankFiltered();
+  $("#bank-dir").textContent = BANK.dir > 0 ? "▲ Ascending" : "▼ Descending";
   $("#bank-count").textContent = `${qs.length} question${qs.length === 1 ? "" : "s"}`;
   $("#bank-list").innerHTML = qs.length ? qs.map(bankItem).join("") : `<div class="card empty">No questions match.</div>`;
   $("#bank-practise").innerHTML = qs.length ? `<button class="primary" id="practise-these">Practise these ${qs.length}</button>` : "";
@@ -802,9 +956,14 @@ function bankItem(q) {
   const lv = level(q);
   const acc = accuracy(q);
   const hist = q.stats.history.slice(-8);
+  const c = countsOf(q);
   return `<details class="card qitem">
     <summary>
       <span class="qtext">${q.flagged ? "★ " : ""}${esc(q.text)}</span>
+      <span class="counts" title="Times answered right / wrong across all quizzes (first answer per quiz)">
+        <span class="${c.right ? "c-right" : ""}" aria-label="${c.right} right">✓ ${c.right}</span>
+        <span class="${c.wrong ? "c-wrong" : ""}" aria-label="${c.wrong} wrong">✗ ${c.wrong}</span>
+      </span>
       <span class="badge ${lv.cls}">${lv.label}</span>
     </summary>
     <ul>${q.options.map((o, i) => `<li class="${q.correct.includes(i) ? "is-correct" : ""}">${q.correct.includes(i) ? "✓ " : ""}${esc(o)}</li>`).join("")}</ul>

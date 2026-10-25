@@ -17,7 +17,7 @@ import shutil
 import threading
 import time
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, unquote
@@ -33,6 +33,8 @@ DB_PATH = DATA_DIR / "db.json"
 # sends it back to box 0. The box decides when it is due again.
 BOX_INTERVAL_DAYS = [0, 1, 2, 4, 8, 16, 32]
 MASTERED_BOX = 3
+# With an exam coming up, steps that no longer fit a day apart are spaced this far apart instead.
+SAME_DAY_GAP_HOURS = 3
 
 lock = threading.Lock()
 DEFAULT_PDF_DIR = APP_DIR / "pdfs"
@@ -118,6 +120,7 @@ def import_pdf(db, path):
             "created": now_iso(),
             # Answered correctly in the real test -> already one step up.
             "stats": new_stats(box=1 if q["result"] == "correct" else 0),
+            "counts": {"right": 0, "wrong": 0},
         }
     db["tests"][test_id] = {
         "id": test_id,
@@ -152,10 +155,81 @@ def scan_folder(db, force=False):
 
 # ---------------------------------------------------------------- progress
 
-def record_answer(db, qid, correct, chosen):
+def exam_date(db):
+    value = db.get("settings", {}).get("exam_date")
+    return date.fromisoformat(value) if value else None
+
+
+def next_due(db, box):
+    """When a question that just reached `box` should be asked again.
+
+    Normally the Leitner interval for the box. With an exam date ahead, the
+    remaining steps to mastery are squeezed into the study days left before the
+    exam (the exam day itself doesn't count), and a mastered question gets one
+    last review before the exam.
+    """
+    now = datetime.now()
+    standard = now + timedelta(days=BOX_INTERVAL_DAYS[box])
+    exam = exam_date(db)
+    if not exam or exam <= now.date():
+        return standard
+    days_after_today = (exam - now.date()).days - 1
+    if box >= MASTERED_BOX:
+        days = min(BOX_INTERVAL_DAYS[box], days_after_today)
+        if days <= 0:
+            return standard
+    else:
+        days = min(BOX_INTERVAL_DAYS[box], days_after_today // (MASTERED_BOX - box))
+        if days <= 0:
+            return now + timedelta(hours=SAME_DAY_GAP_HOURS)
+    # Due from the start of that day, so it can be practised any time that day.
+    return datetime.combine(now.date() + timedelta(days=days), datetime.min.time())
+
+
+def set_exam_date(db, value):
+    settings = db.setdefault("settings", {})
+    if value:
+        exam = date.fromisoformat(value)
+        if exam <= date.today():
+            raise ValueError("the exam date must be in the future")
+        settings["exam_date"] = exam.isoformat()
+        # Pull anything scheduled after the last study day back to that day.
+        last_day = datetime.combine(exam - timedelta(days=1), datetime.min.time())
+        for q in db["questions"].values():
+            due = q["stats"]["due"]
+            if due and datetime.fromisoformat(due) > last_day:
+                q["stats"]["due"] = last_day.isoformat(timespec="seconds")
+    else:
+        settings["exam_date"] = None
+
+
+def backfill_counts(db):
+    """Give every question lifetime right/wrong counters, filled from past quiz sessions.
+
+    Sessions store each question's first answer only, which is exactly what the
+    counters count. Runs once; afterwards record_answer keeps them up to date.
+    """
+    if db.get("counts_backfilled"):
+        return False
+    for q in db["questions"].values():
+        q["counts"] = {"right": 0, "wrong": 0}
+    for session in db["sessions"]:
+        for a in session.get("answers", []):
+            q = db["questions"].get(a["qid"])
+            if q:
+                q["counts"]["right" if a["ok"] else "wrong"] += 1
+    db["counts_backfilled"] = True
+    return True
+
+
+def record_answer(db, qid, correct, chosen, count=False):
     q = db["questions"].get(qid)
     if not q:
         return None
+    if count:
+        # Lifetime counters: one per question per quiz session, never reset.
+        counts = q.setdefault("counts", {"right": 0, "wrong": 0})
+        counts["right" if correct else "wrong"] += 1
     s = q["stats"]
     was_due = not s["due"] or datetime.fromisoformat(s["due"]) <= datetime.now()
     s["seen"] += 1
@@ -167,7 +241,7 @@ def record_answer(db, qid, correct, chosen):
         # box (and its next due date) only moves once the interval has passed.
         if was_due:
             s["box"] = min(s["box"] + 1, len(BOX_INTERVAL_DAYS) - 1)
-            s["due"] = (datetime.now() + timedelta(days=BOX_INTERVAL_DAYS[s["box"]])).isoformat(timespec="seconds")
+            s["due"] = next_due(db, s["box"]).isoformat(timespec="seconds")
     else:
         s["streak"] = 0
         s["box"] = 0
@@ -278,7 +352,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         if method == "POST" and parts == ["answer"]:
             body = self.read_json()
-            q = record_answer(db, body["qid"], bool(body["correct"]), body.get("chosen", []))
+            q = record_answer(db, body["qid"], bool(body["correct"]), body.get("chosen", []),
+                              count=bool(body.get("count")))
             if not q:
                 raise ValueError("unknown question")
             save_db(db)
@@ -307,6 +382,7 @@ class Handler(SimpleHTTPRequestHandler):
                 "id": qid, "text": text, "options": options, "correct": correct,
                 "explanation": "", "sources": [{"test": "manual", "result": "manual"}],
                 "flagged": False, "note": "", "created": now_iso(), "stats": new_stats(),
+                "counts": {"right": 0, "wrong": 0},
             }
             save_db(db)
             return self.send_json(db["questions"][qid])
@@ -338,6 +414,15 @@ class Handler(SimpleHTTPRequestHandler):
                         t["questions"].remove(qid)
                 save_db(db)
                 return self.send_json({"ok": True})
+
+        if method == "PATCH" and parts == ["settings"]:
+            body = self.read_json()
+            if "exam_date" in body:
+                set_exam_date(db, body["exam_date"])
+            if "exam_prompt_dismissed" in body:
+                db.setdefault("settings", {})["exam_prompt_dismissed"] = bool(body["exam_prompt_dismissed"])
+            save_db(db)
+            return self.send_json(db["settings"])
 
         if method == "POST" and parts == ["reset-progress"]:
             backup_db()
@@ -378,7 +463,8 @@ def main():
     with lock:
         db = load_db()
         report = scan_folder(db)
-        if report["imported"] or not DB_PATH.exists():
+        migrated = backfill_counts(db)
+        if report["imported"] or migrated or not DB_PATH.exists():
             backup_db()
             save_db(db)
     for r in report["imported"]:

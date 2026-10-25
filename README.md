@@ -26,12 +26,20 @@ If the counts don't match the PDF header or filename, the test gets a ⚠ badge,
 
 ## How practice works
 
+* **Exam plan**: set your test date on the dashboard and the schedule is squeezed to fit before it: the steps a
+  question still needs are spread over the study days left (normally a day apart, 3 hours apart when days run out),
+  mastered questions get one last check before the day, and the dashboard shows how many right answers a day that
+  takes. The plan asks what's due, least-known first. After the exam date the normal schedule applies again.
 * **Fix my mistakes**: questions you got wrong (in a test or in the app) that you haven't mastered yet.
 * **Spaced review**: a Leitner system. A right answer on a question that is due moves it up a box (next review in
   1, 2, 4, 8… days); answering it again before then is recorded but doesn't move it. A wrong answer always sends it
   back to box 0. Box 3+ counts as **mastered**, so mastery takes right answers on at least three separate days.
 * **Mock exam**: 24 random questions, 45 minutes, 75% to pass, results only at the end.
 * **Weakest / Flagged / Everything**, plus per-test **Mistakes** and **Retake** buttons.
+
+The question bank shows how many times each question was answered right (✓) and wrong (✗) across all quizzes,
+counting only the first answer per quiz (a second chance in the same round doesn't count). These counters are never
+reset, and the bank can be sorted by them, by state, and more, in either direction.
 
 In practice modes a wrong answer is asked again at the end of the round. Keys: `1`–`6` choose, `Enter` check/next, `F` flag.
 
