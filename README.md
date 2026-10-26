@@ -24,22 +24,44 @@ click **Scan folder for new PDFs** (or drag PDFs onto the dashboard). Every ques
 bold options become the correct answers, and the questions you got wrong are marked as mistakes.
 If the counts don't match the PDF header or filename, the test gets a ⚠ badge, and you can fix the question in the question bank.
 
-## How practice works
+## How progress works
 
-* **Exam plan**: set your test date on the dashboard and the schedule is squeezed to fit before it: the steps a
-  question still needs are spread over the study days left (normally a day apart, 3 hours apart when days run out),
-  mastered questions get one last check before the day, and the dashboard shows how many right answers a day that
-  takes. The plan asks what's due, least-known first. After the exam date the normal schedule applies again.
-* **Fix my mistakes**: questions you got wrong (in a test or in the app) that you haven't mastered yet.
-* **Spaced review**: a Leitner system. A right answer on a question that is due moves it up a box (next review in
-  1, 2, 4, 8… days); answering it again before then is recorded but doesn't move it. A wrong answer always sends it
-  back to box 0. Box 3+ counts as **mastered**, so mastery takes right answers on at least three separate days.
+Every question has a **streak**: right answers in a row on separate days. A right answer counts as a **step** if it
+is on a later calendar day than the last one that counted (answering again the same day is recorded but adds
+nothing); a wrong answer resets the streak to 0. Three steps = **mastered**. Mastered questions come back for a check
+after 4, 8, 16 and 32 days, and a wrong answer there starts them over.
+
+Each question is in exactly one state, the highest that applies:
+
+* **Mastered**: streak of 3 or more.
+* **Learning**: answered at least once, here or in a PDF (shown as step 0, 1 or 2).
+* **New**: never answered.
+
+**Missed before** is a permanent mark, not a state: the question was answered wrong at least once, here or in a
+PDF. A question you got right in a PDF starts at step 1; one you got wrong starts at step 0 with the mark.
+
+The dashboard shows **Today** (steps earned, newly mastered, slipped back, and with a test date, today's goal), and
+**Where your questions are**: one bar of New / Learning (by step) / Mastered. Click any part to open those questions
+in the question bank; click Learning to see its steps in detail.
+
+The question bank shows how many times each question was answered right (✓) and wrong (✗): one per PDF it was in,
+plus the first answer in each quiz (a second chance in the same round doesn't count). The bank can be sorted by
+these, by state, and more, in either direction.
+
+**Reset progress** goes back to just after importing your PDFs and keeps the counters. **Start from blank** makes
+every question New, with counters at 0 and no missed marks.
+
+## Quiz modes
+
+* **Exam plan**: set your test date on the dashboard. Only questions where a right answer counts today, furthest
+  from mastered first. When fewer study days are left than steps needed, steps may be 3 hours apart instead of a
+  day, and mastered questions get one last check before the day. After the exam date the normal rules apply again.
+* **Ready to count**: every question where a right answer would count right now.
+* **Missed, not yet mastered**: questions with the missed-before mark that aren't mastered.
 * **Mock exam**: 24 random questions, 45 minutes, 75% to pass, results only at the end.
 * **Weakest / Flagged / Everything**, plus per-test **Mistakes** and **Retake** buttons.
 
-The question bank shows how many times each question was answered right (✓) and wrong (✗) across all quizzes,
-counting only the first answer per quiz (a second chance in the same round doesn't count). These counters are never
-reset, and the bank can be sorted by them, by state, and more, in either direction.
+After each quiz the results show the steps it earned, questions newly mastered and questions that slipped back.
 
 In practice modes a wrong answer is asked again at the end of the round. Keys: `1`–`6` choose, `Enter` check/next, `F` flag.
 

@@ -29,12 +29,21 @@ STATIC_DIR = APP_DIR / "static"
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "db.json"
 
-# Leitner boxes: a correct answer moves a question up one box, a wrong answer
-# sends it back to box 0. The box decides when it is due again.
-BOX_INTERVAL_DAYS = [0, 1, 2, 4, 8, 16, 32]
-MASTERED_BOX = 3
-# With an exam coming up, steps that no longer fit a day apart are spaced this far apart instead.
+# Progress model (version 2). Each question has:
+#   streak        right answers in a row that counted; MASTERED_STREAK of them = mastered
+#   last_counted  when the last counting answer happened (None after a wrong answer)
+#   flags         practised (answered at least once, here or in a PDF) and missed (ever
+#                 wrong, here or in a PDF); both are permanent until "start from blank"
+#   counts        lifetime right/wrong: one per PDF the question was in, one per quiz
+# A right answer counts only on a later calendar day than the last one that counted.
+# A wrong answer resets the streak, so mastery means right on MASTERED_STREAK separate
+# days with no miss in between. Mastered questions get a check after CHECK_DAYS.
+MASTERED_STREAK = 3
+CHECK_DAYS = [4, 8, 16, 32]
+MAX_STREAK = MASTERED_STREAK + len(CHECK_DAYS)
+# With an exam coming up and fewer study days left than steps needed, steps may be this close.
 SAME_DAY_GAP_HOURS = 3
+DB_VERSION = 2
 
 lock = threading.Lock()
 DEFAULT_PDF_DIR = APP_DIR / "pdfs"
@@ -48,7 +57,8 @@ def now_iso():
 
 
 def empty_db():
-    return {"version": 1, "tests": {}, "questions": {}, "sessions": []}
+    return {"version": DB_VERSION, "counts_backfilled": True, "tests": {}, "questions": {},
+            "sessions": [], "daily": {}}
 
 
 def load_db():
@@ -84,9 +94,23 @@ def question_id(text, options):
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
-def new_stats(box=0):
-    return {"seen": 0, "right": 0, "streak": 0, "box": box, "last_seen": None,
-            "due": None, "history": []}
+def new_stats(streak=0, last_counted=None):
+    return {"streak": streak, "last_counted": last_counted, "due": None,
+            "seen": 0, "right": 0, "last_seen": None, "history": []}
+
+
+def pdf_results(q):
+    return [s["result"] for s in q["sources"] if s["result"] in ("correct", "incorrect")]
+
+
+def start_from_pdfs(db, q):
+    """Progress as it stands right after importing the question's PDFs (no practice here)."""
+    results = pdf_results(q)
+    missed = "incorrect" in results
+    streak = 0 if missed or not results else 1
+    q["stats"] = new_stats(streak, now_iso() if streak else None)
+    q["flags"] = {"practised": bool(results), "missed": missed}
+    refresh_due(db, q)
 
 
 # ---------------------------------------------------------------- import
@@ -101,14 +125,12 @@ def import_pdf(db, path):
         source = {"test": test_id, "result": q["result"]}
         existing = db["questions"].get(qid)
         if existing:
-            # Only a newly seen mistake resets progress; re-importing the same test must not.
+            # Re-importing the same test changes nothing; a new test adds its answer.
             if source not in existing["sources"]:
                 existing["sources"].append(source)
-                if q["result"] == "incorrect":
-                    existing["stats"]["box"] = 0
-                    existing["stats"]["due"] = None
+                apply_pdf_answer(db, existing, q["result"] == "correct")
             continue
-        db["questions"][qid] = {
+        new = db["questions"][qid] = {
             "id": qid,
             "text": q["text"],
             "options": q["options"],
@@ -118,10 +140,10 @@ def import_pdf(db, path):
             "flagged": False,
             "note": "",
             "created": now_iso(),
-            # Answered correctly in the real test -> already one step up.
-            "stats": new_stats(box=1 if q["result"] == "correct" else 0),
             "counts": {"right": 0, "wrong": 0},
         }
+        start_from_pdfs(db, new)
+        new["counts"] = {"right": int(q["result"] == "correct"), "wrong": int(q["result"] == "incorrect")}
     db["tests"][test_id] = {
         "id": test_id,
         "title": parsed["title"],
@@ -160,30 +182,55 @@ def exam_date(db):
     return date.fromisoformat(value) if value else None
 
 
-def next_due(db, box):
-    """When a question that just reached `box` should be asked again.
+def start_of(day):
+    return datetime.combine(day, datetime.min.time())
 
-    Normally the Leitner interval for the box. With an exam date ahead, the
-    remaining steps to mastery are squeezed into the study days left before the
-    exam (the exam day itself doesn't count), and a mastered question gets one
-    last review before the exam.
+
+def next_count_time(db, stats, now=None):
+    """From when a right answer counts again for a question with these stats.
+
+    Not mastered: from the next calendar day after the last counting answer (right
+    away if nothing counted since the last miss). With an exam ahead and more steps
+    left than study days, SAME_DAY_GAP_HOURS later instead. Mastered: a check after
+    CHECK_DAYS, pulled forward to the last study day before an exam.
+    Pass `now` when comparing against it, so both sides use the same instant.
     """
-    now = datetime.now()
-    standard = now + timedelta(days=BOX_INTERVAL_DAYS[box])
+    now = now or datetime.now()
+    if not stats["last_counted"]:
+        return now
+    last = datetime.fromisoformat(stats["last_counted"])
+    streak = stats["streak"]
     exam = exam_date(db)
-    if not exam or exam <= now.date():
-        return standard
-    days_after_today = (exam - now.date()).days - 1
-    if box >= MASTERED_BOX:
-        days = min(BOX_INTERVAL_DAYS[box], days_after_today)
-        if days <= 0:
-            return standard
-    else:
-        days = min(BOX_INTERVAL_DAYS[box], days_after_today // (MASTERED_BOX - box))
-        if days <= 0:
-            return now + timedelta(hours=SAME_DAY_GAP_HOURS)
-    # Due from the start of that day, so it can be practised any time that day.
-    return datetime.combine(now.date() + timedelta(days=days), datetime.min.time())
+    exam_ahead = exam is not None and exam > now.date()
+    if streak < MASTERED_STREAK:
+        when = start_of(last.date() + timedelta(days=1))
+        if exam_ahead:
+            # Study days still free after the last counted one (the exam day itself doesn't count).
+            free_days = (exam - last.date()).days - 1
+            if MASTERED_STREAK - streak > free_days:
+                when = min(when, last + timedelta(hours=SAME_DAY_GAP_HOURS))
+        return when
+    interval = CHECK_DAYS[min(streak - MASTERED_STREAK, len(CHECK_DAYS) - 1)]
+    when = start_of(last.date() + timedelta(days=interval))
+    if exam_ahead:
+        last_study_day = start_of(exam - timedelta(days=1))
+        if when > last_study_day:
+            when = max(last_study_day, start_of(last.date() + timedelta(days=1)))
+    return when
+
+
+def refresh_due(db, q):
+    q["stats"]["due"] = next_count_time(db, q["stats"]).isoformat(timespec="seconds")
+
+
+def apply_pdf_answer(db, q, correct):
+    """A new PDF containing this question: it counts like an answer given on import."""
+    q["counts"]["right" if correct else "wrong"] += 1
+    q["flags"]["practised"] = True
+    if not correct:
+        q["flags"]["missed"] = True
+        q["stats"].update(streak=0, last_counted=None)
+    refresh_due(db, q)
 
 
 def set_exam_date(db, value):
@@ -193,14 +240,10 @@ def set_exam_date(db, value):
         if exam <= date.today():
             raise ValueError("the exam date must be in the future")
         settings["exam_date"] = exam.isoformat()
-        # Pull anything scheduled after the last study day back to that day.
-        last_day = datetime.combine(exam - timedelta(days=1), datetime.min.time())
-        for q in db["questions"].values():
-            due = q["stats"]["due"]
-            if due and datetime.fromisoformat(due) > last_day:
-                q["stats"]["due"] = last_day.isoformat(timespec="seconds")
     else:
         settings["exam_date"] = None
+    for q in db["questions"].values():
+        refresh_due(db, q)
 
 
 def backfill_counts(db):
@@ -222,32 +265,94 @@ def backfill_counts(db):
     return True
 
 
+def migrate_v2(db):
+    """Convert the version 1 progress model (Leitner box + due date) in place.
+
+    box -> streak; the last right answer (or the import time) -> last_counted; flags
+    from PDF results, the answer log and the wrong counter; PDF results are added to
+    the counters, which so far only held quiz answers.
+    """
+    if db.get("version", 1) >= DB_VERSION:
+        return False
+    for q in db["questions"].values():
+        old = q["stats"]
+        history = old.get("history", [])
+        box = min(old.get("box", 0), MAX_STREAK)
+        last_right = next((h["t"] for h in reversed(history) if h["ok"]), None)
+        results = pdf_results(q)
+        counts = q.setdefault("counts", {"right": 0, "wrong": 0})
+        q["flags"] = {
+            "practised": bool(results) or old.get("seen", 0) > 0,
+            "missed": "incorrect" in results or any(not h["ok"] for h in history) or counts["wrong"] > 0,
+        }
+        counts["right"] += results.count("correct")
+        counts["wrong"] += results.count("incorrect")
+        q["stats"] = {
+            "streak": box,
+            "last_counted": (last_right or q.get("created")) if box else None,
+            "due": None,
+            "seen": old.get("seen", 0), "right": old.get("right", 0),
+            "last_seen": old.get("last_seen"), "history": history,
+        }
+        refresh_due(db, q)
+    db.setdefault("daily", {})
+    db["version"] = DB_VERSION
+    return True
+
+
+def log_day(db, **changes):
+    day = db.setdefault("daily", {}).setdefault(date.today().isoformat(),
+                                                {"answers": 0, "steps": 0, "mastered": 0, "slipped": 0})
+    for key, n in changes.items():
+        day[key] += n
+
+
 def record_answer(db, qid, correct, chosen, count=False):
     q = db["questions"].get(qid)
     if not q:
         return None
     if count:
         # Lifetime counters: one per question per quiz session, never reset.
-        counts = q.setdefault("counts", {"right": 0, "wrong": 0})
-        counts["right" if correct else "wrong"] += 1
+        q["counts"]["right" if correct else "wrong"] += 1
     s = q["stats"]
-    was_due = not s["due"] or datetime.fromisoformat(s["due"]) <= datetime.now()
+    before = s["streak"]
+    counted = False
+    now = datetime.now()
+    q["flags"]["practised"] = True
     s["seen"] += 1
-    s["last_seen"] = now_iso()
+    s["last_seen"] = now.isoformat(timespec="seconds")
     if correct:
         s["right"] += 1
-        s["streak"] += 1
-        # Answering again before the question is due proves nothing new, so the
-        # box (and its next due date) only moves once the interval has passed.
-        if was_due:
-            s["box"] = min(s["box"] + 1, len(BOX_INTERVAL_DAYS) - 1)
-            s["due"] = next_due(db, s["box"]).isoformat(timespec="seconds")
+        # Answering again the same day proves nothing new: only a later day counts.
+        if now >= next_count_time(db, s, now):
+            s["streak"] = min(before + 1, MAX_STREAK)
+            s["last_counted"] = s["last_seen"]
+            counted = True
     else:
+        q["flags"]["missed"] = True
         s["streak"] = 0
-        s["box"] = 0
-        s["due"] = now_iso()
-    s["history"] = (s["history"] + [{"t": s["last_seen"], "ok": correct, "chosen": chosen}])[-20:]
+        s["last_counted"] = None
+    refresh_due(db, q)
+    s["history"] = (s["history"] + [{"t": s["last_seen"], "ok": correct, "chosen": chosen,
+                                     "counted": counted}])[-20:]
+    log_day(db, answers=1, steps=int(counted),
+            mastered=int(before < MASTERED_STREAK <= s["streak"]),
+            slipped=int(not correct and before > 0))
     return q
+
+
+def reset_progress(db, blank=False):
+    """Back to just after import (counters kept), or with blank=True, as if nothing was ever answered."""
+    for q in db["questions"].values():
+        if blank:
+            q["stats"] = new_stats()
+            q["flags"] = {"practised": False, "missed": False}
+            q["counts"] = {"right": 0, "wrong": 0}
+            refresh_due(db, q)
+        else:
+            start_from_pdfs(db, q)
+    db["sessions"] = []
+    db["daily"] = {}
 
 
 def validate_question(body):
@@ -311,8 +416,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         if method == "GET" and parts == ["db"]:
             return self.send_json({**db, "config": {
-                "pdf_dir": str(PDF_DIR), "box_interval_days": BOX_INTERVAL_DAYS,
-                "mastered_box": MASTERED_BOX}})
+                "pdf_dir": str(PDF_DIR), "mastered_streak": MASTERED_STREAK, "check_days": CHECK_DAYS}})
 
         if method == "GET" and parts == ["export"]:
             body = json.dumps(db, indent=1, ensure_ascii=False).encode()
@@ -381,9 +485,10 @@ class Handler(SimpleHTTPRequestHandler):
             db["questions"][qid] = {
                 "id": qid, "text": text, "options": options, "correct": correct,
                 "explanation": "", "sources": [{"test": "manual", "result": "manual"}],
-                "flagged": False, "note": "", "created": now_iso(), "stats": new_stats(),
+                "flagged": False, "note": "", "created": now_iso(),
                 "counts": {"right": 0, "wrong": 0},
             }
+            start_from_pdfs(db, db["questions"][qid])
             save_db(db)
             return self.send_json(db["questions"][qid])
 
@@ -403,7 +508,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if "flagged" in body:
                     q["flagged"] = bool(body["flagged"])
                 if body.get("reset_stats"):
-                    q["stats"] = new_stats()
+                    start_from_pdfs(db, q)
                 save_db(db)
                 return self.send_json(q)
             if method == "DELETE":
@@ -426,10 +531,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         if method == "POST" and parts == ["reset-progress"]:
             backup_db()
-            for q in db["questions"].values():
-                box = 0 if any(s["result"] == "incorrect" for s in q["sources"]) else 1
-                q["stats"] = new_stats(box=box)
-            db["sessions"] = []
+            reset_progress(db, blank=bool(self.read_json().get("blank")))
             save_db(db)
             return self.send_json({"ok": True})
 
@@ -462,8 +564,13 @@ def main():
 
     with lock:
         db = load_db()
-        report = scan_folder(db)
+        # Order matters: quiz counters first, then the model conversion, then new PDFs
+        # (which are imported straight into the new model).
         migrated = backfill_counts(db)
+        migrated = migrate_v2(db) or migrated
+        if migrated and DB_PATH.exists():
+            backup_db()
+        report = scan_folder(db)
         if report["imported"] or migrated or not DB_PATH.exists():
             backup_db()
             save_db(db)

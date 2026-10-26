@@ -85,31 +85,39 @@ async function reload() {
 
 // ------------------------------------------------------------------ derived data
 
+// Progress model (see server.py): a streak of right answers on separate days; MASTERED of them
+// = mastered. State is the highest of: Mastered > Learning (answered at least once) > New.
+// "Missed before" is a permanent mark, not a state.
 const allQs = () => Object.values(DB.questions);
-const masteredBox = () => DB.config.mastered_box;
+const MASTERED = () => DB.config.mastered_streak;
+const isMastered = q => q.stats.streak >= MASTERED();
+const step = q => Math.min(q.stats.streak, MASTERED());
+const missedBefore = q => !!q.flags?.missed;
 const wasWrongInTest = (q, testId) => q.sources.some(s => s.result === "incorrect" && (!testId || s.test === testId));
-const wasWrongHere = q => q.stats.history.some(h => !h.ok);
-const isMastered = q => q.stats.box >= masteredBox();
+// A right answer given now would count (not already counted today, or a mastered question's check is due).
 const isDue = q => !q.stats.due || new Date(q.stats.due) <= new Date();
-const needsFix = q => (wasWrongInTest(q) || wasWrongHere(q)) && !isMastered(q);
+const needsFix = q => missedBefore(q) && !isMastered(q);
 const accuracy = q => (q.stats.seen ? q.stats.right / q.stats.seen : null);
 const isMulti = q => q.correct.length > 1;
 
-// The box a question starts in on import (see server.py): 1 if you got it right in a PDF test.
-const startBox = q => (wasWrongInTest(q) || q.sources.every(s => s.result === "manual") ? 0 : 1);
-
-// 0 -> 1 progress earned by practising in the app; the head start from PDF results doesn't count.
-function masteryProgress(q) {
-  if (isMastered(q)) return 1;
-  const start = startBox(q);
-  return Math.min(1, Math.max(0, (q.stats.box - start) / (masteredBox() - start)));
-}
+const state = q => (isMastered(q) ? "Mastered" : q.flags?.practised ? "Learning" : "New");
+const STATE_CLASS = { New: "", Learning: "warn", Mastered: "ok" };
 
 function level(q) {
-  if (isMastered(q)) return { label: "Mastered", cls: "ok" };
-  if (q.stats.box === 0 && (wasWrongInTest(q) || wasWrongHere(q))) return { label: "To fix", cls: "bad" };
-  if (q.stats.seen === 0) return { label: "New", cls: "" };
-  return { label: "Learning", cls: "warn" };
+  const label = state(q);
+  return { label, cls: STATE_CLASS[label] };
+}
+
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const today = () => ({ answers: 0, steps: 0, mastered: 0, slipped: 0, ...(DB.daily?.[todayIso()] || {}) });
+
+function relAgo(iso) {
+  if (!iso) return "never";
+  const days = -calendarDaysFromToday(new Date(iso));
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
 }
 
 function testShort(id) {
@@ -118,9 +126,9 @@ function testShort(id) {
 }
 
 function weakness(q) {
-  // Lower = weaker. Box dominates, accuracy breaks ties, unseen mistakes first.
+  // Lower = weaker. Streak dominates, accuracy breaks ties, unpractised mistakes first.
   const acc = accuracy(q);
-  return q.stats.box * 10 + (acc === null ? (wasWrongInTest(q) ? 0 : 5) : acc * 9);
+  return q.stats.streak * 10 + (acc === null ? (missedBefore(q) ? 0 : 5) : acc * 9);
 }
 
 // ------------------------------------------------------------------ exam date
@@ -134,7 +142,7 @@ function examInfo() {
   return { iso, day, daysLeft: calendarDaysFromToday(day), active: calendarDaysFromToday(day) > 0 };
 }
 
-const stepsLeft = q => (isMastered(q) ? 0 : masteredBox() - q.stats.box);
+const stepsLeft = q => MASTERED() - step(q);
 
 async function saveSettings(patch) {
   try {
@@ -149,21 +157,21 @@ async function saveSettings(patch) {
 const MODES = {
   plan: {
     title: "Exam plan",
-    desc: "Built around your test date: asks what's due, least-known first, and spaces the reviews so every question can be mastered before the day.",
+    desc: "Built around your test date: only questions where a right answer counts today, furthest from mastered first.",
     pool: () => shuffle(allQs().filter(isDue)).sort((a, b) => stepsLeft(b) - stepsLeft(a)),
     requeue: true, size: 20,
     available: () => !!examInfo()?.active,
   },
   fix: {
-    title: "Fix my mistakes",
-    desc: "Questions you got wrong in a test or here, until they are mastered (right on 3 separate days). Wrong answers come back at the end of the round.",
-    pool: () => shuffle(allQs().filter(needsFix)).sort((a, b) => a.stats.box - b.stats.box),
+    title: "Missed, not yet mastered",
+    desc: "Questions you've got wrong at least once, in a test or here, that aren't mastered yet. Wrong answers come back at the end of the round.",
+    pool: () => shuffle(allQs().filter(needsFix)).sort((a, b) => isDue(b) - isDue(a) || step(a) - step(b)),
     requeue: true, size: 20,
   },
   review: {
-    title: "Spaced review",
-    desc: "Questions that are due. Each right answer pushes a question further out (1, 2, 4, 8… days); a wrong answer brings it back to today.",
-    pool: () => shuffle(allQs().filter(isDue)).sort((a, b) => a.stats.box - b.stats.box),
+    title: "Ready to count",
+    desc: "Questions where a right answer counts right now: not yet counted today, or a mastered question due its check. Each one is a step towards mastery.",
+    pool: () => shuffle(allQs().filter(isDue)).sort((a, b) => step(a) - step(b)),
     requeue: true, size: 20,
   },
   exam: {
@@ -174,7 +182,7 @@ const MODES = {
   },
   weak: {
     title: "Weakest questions",
-    desc: "The questions with your lowest box and accuracy, regardless of whether they are due.",
+    desc: "The questions with your lowest streak and accuracy, whether or not an answer counts today.",
     pool: () => shuffle(allQs()).sort((a, b) => weakness(a) - weakness(b)),
     requeue: true, size: 10,
   },
@@ -224,10 +232,6 @@ window.addEventListener("hashchange", router);
 function renderHome() {
   const qs = allQs();
   const tests = Object.values(DB.tests).sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
-  const mastered = qs.filter(isMastered).length;
-  const progress = qs.length ? qs.reduce((n, q) => n + masteryProgress(q), 0) / qs.length : 0;
-  const byLevel = { Mastered: 0, Learning: 0, New: 0, "To fix": 0 };
-  qs.forEach(q => byLevel[level(q).label]++);
   const toFix = qs.filter(needsFix).length;
   const due = qs.filter(isDue).length;
   const exams = DB.sessions.filter(s => s.mode === "exam").slice(-5);
@@ -254,22 +258,14 @@ function renderHome() {
     <section>
       <h1>Life in the UK – practice</h1>
       ${examCard(qs)}
+      ${todayCard()}
+      ${ladderCard(qs)}
       <div class="grid tiles">
         ${tile(qs.length, "questions in your bank")}
-        ${tile(toFix, "mistakes still to fix")}
-        ${tile(due, "due for review now")}
-        ${tile(`${Math.round(progress * 100)}%`, `progress to mastery · ${mastered} of ${qs.length} mastered`)}
+        ${tile(due, "ready to count now")}
+        ${tile(toFix, "missed before, not yet mastered")}
         ${tile(examAvg === null ? "–" : `${Math.round(examAvg * 100)}%`,
               examAvg === null ? "no mock exams yet" : `avg of last ${exams.length} mock exams · ${examPasses} passed`)}
-      </div>
-      <div class="stack" style="margin-top:12px" role="img"
-           aria-label="${Object.entries(byLevel).map(([k, v]) => `${k}: ${v}`).join(", ")}">
-        ${Object.entries(byLevel).filter(([, v]) => v).map(([k, v]) =>
-          `<span class="seg-${k.replace(" ", "")}" style="flex:${v}" title="${k}: ${v}"></span>`).join("")}
-      </div>
-      <div class="legend small">
-        ${Object.entries(byLevel).map(([k, v]) => `<span><i class="seg-${k.replace(" ", "")}"></i>${k} <b>${v}</b></span>`).join("")}
-        <span class="muted">A question is mastered after 3 right answers spaced out over days (today, then 1 and 2 days later); a wrong answer starts it over.</span>
       </div>
     </section>
 
@@ -294,7 +290,8 @@ function renderHome() {
         <a class="btn small" href="/api/export">Download backup</a>
         <button class="small" id="rescan-force">Re-import all PDFs</button>
         <button class="small" id="exam-date-open">${examInfo() ? "Change test date" : "Set test date"}</button>
-        <button class="small danger" id="reset-progress">Reset all progress</button>
+        <button class="small danger" id="reset-progress" title="Back to just after importing your PDFs; right/wrong counters are kept">Reset progress</button>
+        <button class="small danger" id="reset-blank" title="Everything New, counters at 0, no missed marks">Start from blank</button>
         <span class="muted small">Stored in <code>data/db.json</code>; a backup is taken before every import or reset.</span>
       </div>
     </section>
@@ -308,14 +305,140 @@ function renderHome() {
   drawTestsTable();
   bindExamCard();
   $("#rescan-force").onclick = () => scan(true);
-  $("#reset-progress").onclick = async () => {
-    if (!confirm("Reset all progress and quiz history? Questions are kept, and a backup is saved first.")) return;
-    await api("POST", "reset-progress");
+  const reset = async (blank, message) => {
+    if (!confirm(message)) return;
+    await api("POST", "reset-progress", { blank });
     await reload();
-    toast("Progress reset");
+    toast(blank ? "Started from blank" : "Progress reset");
     renderHome();
   };
+  $("#reset-progress").onclick = () => reset(false,
+    "Reset progress to just after importing your PDFs?\n\nStreaks and quiz history are cleared; questions, missed marks from the PDFs and right/wrong counters are kept. A backup is saved first.");
+  $("#reset-blank").onclick = () => reset(true,
+    "Start from blank?\n\nEvery question becomes New, counters go to 0, missed marks are removed and quiz history is cleared, as if you had never answered anything. A backup is saved first.");
+  bindLadder();
   bindImport();
+}
+
+// ------------------------------------------------------------------ today + ladder
+
+function todayCard() {
+  const t = today();
+  const info = examInfo();
+  let goal = "";
+  if (info?.active) {
+    // Today's share of what's left; today's own steps are added back so the goal holds still all day.
+    const needed = allQs().reduce((n, q) => n + stepsLeft(q), 0);
+    const target = Math.max(1, Math.ceil((needed + t.steps) / info.daysLeft));
+    const pct = Math.min(100, t.steps / target * 100);
+    goal = `<div class="goal">
+      <div class="goal-head"><span>Today's goal for your test</span><b>${t.steps} / ${target} steps</b></div>
+      <div class="bar ${t.steps >= target ? "ok" : ""}" role="progressbar" aria-valuenow="${t.steps}" aria-valuemax="${target}"><span style="width:${pct}%"></span></div>
+    </div>`;
+  }
+  const stat = (n, label, cls = "") => `<div class="today-stat ${cls}"><b>${n}</b><span>${label}</span></div>`;
+  return `<div class="card today-card">
+    <h2>Today</h2>
+    <div class="today-stats">
+      ${stat(`+${t.steps}`, "steps earned", t.steps ? "good" : "")}
+      ${stat(t.mastered, "newly mastered", t.mastered ? "good" : "")}
+      ${stat(t.slipped, "slipped back to step 0", t.slipped ? "bad" : "")}
+      ${stat(t.answers, "answers given")}
+    </div>
+    ${goal}
+    ${t.answers ? "" : `<p class="small muted" style="margin:8px 0 0">Nothing yet today – start with <b>${examInfo()?.active ? "Exam plan" : "Ready to count"}</b> below.</p>`}
+  </div>`;
+}
+
+// The ladder: every question is in exactly one segment. Learning is split by step.
+function ladderParts(qs) {
+  const parts = [
+    { key: "state:New", label: "New", cls: "seg-new", n: 0 },
+    ...[0, 1, 2].map(s => ({ key: `step:${s}`, label: `Learning · step ${s}`, short: `step ${s}`, cls: `seg-l${s}`, n: 0 })),
+    { key: "state:Mastered", label: "Mastered", cls: "seg-mastered", n: 0 },
+  ];
+  for (const q of qs) {
+    const st = state(q);
+    const part = st === "New" ? parts[0] : st === "Mastered" ? parts[4] : parts[1 + step(q)];
+    part.n++;
+  }
+  return parts;
+}
+
+function donut(parts, total) {
+  // Thin ring, a 2px surface gap between segments, every segment labelled in the list beside it.
+  const r = 42, c = 2 * Math.PI * r, gap = parts.filter(p => p.n).length > 1 ? 2 : 0;
+  let offset = 0;
+  const segs = parts.filter(p => p.n).map(p => {
+    const len = p.n / total * c;
+    const s = `<circle class="${p.cls}-stroke" r="${r}" cx="50" cy="50" fill="none" stroke-width="12"
+      stroke-dasharray="${Math.max(0, len - gap)} ${c}" stroke-dashoffset="${-offset}"><title>${p.label}: ${p.n}</title></circle>`;
+    offset += len;
+    return s;
+  }).join("");
+  return `<svg viewBox="0 0 100 100" class="donut" role="img" aria-label="${parts.map(p => `${p.label}: ${p.n}`).join(", ")}">
+    <g transform="rotate(-90 50 50)">${segs}</g>
+    <text x="50" y="48" text-anchor="middle" class="donut-n">${total}</text>
+    <text x="50" y="62" text-anchor="middle" class="donut-l">learning</text>
+  </svg>`;
+}
+
+function ladderCard(qs) {
+  const parts = ladderParts(qs);
+  const learning = parts.slice(1, 4);
+  const nLearning = learning.reduce((n, p) => n + p.n, 0);
+  const total = qs.length;
+  const pct = n => `${(n / total * 100).toFixed(n && n / total < 0.01 ? 1 : 0)}%`;
+  const chip = (key, label, n, cls, extra = "") =>
+    `<button class="chip" data-ladder="${key}" ${extra}><i class="${cls}"></i>${label} <b>${n}</b></button>`;
+  const open = LADDER_OPEN;
+  return `<div class="card ladder-card">
+    <div class="ladder-head">
+      <h2>Where your questions are</h2>
+      <span class="small muted">Mastered = right on ${MASTERED()} separate days with no miss in between</span>
+    </div>
+    <div class="ladder" role="img" aria-label="${parts.map(p => `${p.label}: ${p.n}`).join(", ")}">
+      ${parts.filter(p => p.n).map(p => `<button class="${p.cls}" style="flex:${p.n}" data-ladder="${p.key}"
+        title="${p.label}: ${p.n} (${pct(p.n)}) – click to see them"></button>`).join("")}
+    </div>
+    <div class="legend chips">
+      ${chip("state:New", "New", parts[0].n, "seg-new")}
+      ${chip("learning", `Learning ${open ? "▾" : "▸"}`, nLearning, "seg-l1", `aria-expanded="${open}"`)}
+      ${chip("state:Mastered", "Mastered", parts[4].n, "seg-mastered")}
+      ${chip("missed", "Missed before", allQs().filter(missedBefore).length, "mark-missed", 'title="A permanent mark: got wrong at least once, here or in a PDF"')}
+    </div>
+    ${open ? `<div class="learning-detail">
+      ${nLearning ? donut(learning, nLearning) : ""}
+      <div class="learning-rows">
+        ${learning.map(p => `<div class="learning-row">
+          <i class="${p.cls}"></i>
+          <span><b>${p.n}</b> at ${p.short} <span class="muted">· ${MASTERED() - Number(p.key.slice(5))} more day${MASTERED() - Number(p.key.slice(5)) === 1 ? "" : "s"} right to master</span></span>
+          <button class="small" data-ladder="${p.key}" ${p.n ? "" : "disabled"}>Show</button>
+          <button class="small" data-ladder-practise="${p.key}" ${p.n ? "" : "disabled"}>Practise</button>
+        </div>`).join("")}
+        <p class="small muted" style="margin:6px 0 0">A step is a right answer on a new day. A wrong answer sends a question back to step 0.</p>
+      </div>
+    </div>` : ""}
+  </div>`;
+}
+
+let LADDER_OPEN = false;
+
+function questionsFor(key) {
+  return allQs().filter(q => bankMatches(q, key));
+}
+
+function bindLadder() {
+  $$("[data-ladder]").forEach(el => el.onclick = () => {
+    const key = el.dataset.ladder;
+    if (key === "learning") { LADDER_OPEN = !LADDER_OPEN; return renderHome(); }
+    location.hash = `#/bank/${encodeURIComponent(key)}`;
+  });
+  $$("[data-ladder-practise]").forEach(el => el.onclick = () => {
+    const key = el.dataset.ladderPractise;
+    startCustom(`Learning · step ${key.slice(5)}`, questionsFor(key).filter(isDue).map(q => q.id)
+      .concat(questionsFor(key).filter(q => !isDue(q)).map(q => q.id)).slice(0, 20), { requeue: true });
+  });
 }
 
 // ------------------------------------------------------------------ exam card
@@ -364,13 +487,13 @@ function examCard(qs) {
     </div>
     <div class="exam-stats">
       <div><b>${toMaster.length}</b><span>questions still to master</span></div>
-      <div><b>${needed}</b><span>right answers needed in total</span></div>
-      <div><b>~${perDay}</b><span>right answers a day to finish in time</span></div>
-      <div><b>${dueNow}</b><span>due now</span></div>
+      <div><b>${needed}</b><span>steps needed in total</span></div>
+      <div><b>~${perDay}</b><span>steps a day to finish in time</span></div>
+      <div><b>${dueNow}</b><span>ready to count now</span></div>
     </div>
     <p class="small muted" style="margin:10px 0 0">
-      Each right answer on a due question moves it one step; reviews are spaced to fit before ${fmtDay(info.day)}.
-      Work through what's due each day ${dueNow ? "" : "– nothing is due right now, come back later"}.
+      A step is a right answer on a new day; ${MASTERED()} steps in a row master a question.
+      ${dueNow ? "" : "Everything has counted for today – come back tomorrow."}
       <a href="#" id="exam-change">Change date</a>
     </p>
     <div id="exam-change-form" hidden style="margin-top:10px">${examDateForm(info)}</div>
@@ -582,6 +705,7 @@ function begin({ mode, label, ids, exam, requeue }) {
     selected: {},           // pos -> [option index]
     checked: {},            // pos -> bool (practice: answer revealed)
     firstResult: {},        // qid -> {ok, chosen}
+    deltas: [],             // what each saved answer did to progress (for the results summary)
     marked: new Set(),      // exam: marked for review
     started: new Date().toISOString(),
     startMs: Date.now(),
@@ -702,18 +826,26 @@ function renderQuiz() {
 
 function progressNote(change, ok) {
   if (!change) return "";
-  const M = masteredBox();
+  const M = MASTERED();
+  const stepText = n => (n >= M ? "mastered" : `step ${n} of ${M}`);
   let text;
   if (!ok) {
-    text = `Back to the start (step 0 of ${M})${QUIZ.requeue ? " · you'll get it again at the end of this round" : ""}`;
-  } else if (change.after > change.before) {
-    text = change.after >= M && change.before < M
-      ? `🎉 Mastered · one more check ${relDays(change.due)}`
-      : `Step ${Math.min(change.after, M)} of ${M} · next review ${relDays(change.due)}`;
+    text = change.before > 0 ? `Back to step 0 of ${M} (was ${stepText(change.before)})` : `Still at step 0 of ${M}`;
+    if (QUIZ.requeue) text += " · you'll get it again at the end of this round";
+  } else if (change.counted) {
+    text = change.after === M ? "🎉 Mastered – right on 3 separate days"
+      : change.after > M ? "Mastered · check passed"
+      : `+1 step: now ${stepText(change.after)} · the next step counts ${relDays(change.due)}`;
   } else {
-    text = `Not due yet, so it stays at step ${Math.min(change.after, M)} of ${M} · next counts ${relDays(change.due)}`;
+    text = `Already counted today, so it stays at ${stepText(change.after)} · the next step counts ${relDays(change.due)}`;
   }
   return `<div class="small progress-note">${text}</div>`;
+}
+
+// What an answer did to a question's progress, from the server's reply.
+function answerChange(before, q) {
+  const last = q.stats.history[q.stats.history.length - 1];
+  return { before, after: q.stats.streak, counted: !!last?.counted, due: q.stats.due };
 }
 
 function choose(optIdx) {
@@ -744,9 +876,11 @@ async function check() {
   if (first) QUIZ.firstResult[q.id] = { ok, chosen: sel };
   if (!ok && QUIZ.requeue) QUIZ.queue.push(q.id);
   try {
-    const before = q.stats.box;
+    const before = q.stats.streak;
     DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel, count: first });
-    QUIZ.change = { ...QUIZ.change, [pos]: { before, after: DB.questions[q.id].stats.box, due: DB.questions[q.id].stats.due } };
+    const change = answerChange(before, DB.questions[q.id]);
+    QUIZ.change = { ...QUIZ.change, [pos]: change };
+    QUIZ.deltas.push(change);
   } catch (e) {
     toast("Could not save answer: " + e.message);
   }
@@ -788,7 +922,9 @@ async function submitExam(timeUp = false) {
     const ok = sameSet(sel, q.correct);
     QUIZ.firstResult[q.id] = { ok, chosen: sel };
     try {
+      const before = q.stats.streak;
       DB.questions[q.id] = await api("POST", "answer", { qid: q.id, correct: ok, chosen: sel, count: true });
+      QUIZ.deltas.push(answerChange(before, DB.questions[q.id]));
     } catch (e) { /* keep going, results still shown */ }
   }
   finish();
@@ -824,6 +960,11 @@ function renderResults() {
   const passed = pct >= PASS_RATIO;
   const ids = QUIZ.first.filter(id => id in QUIZ.firstResult);
   const wrong = ids.filter(id => !QUIZ.firstResult[id].ok);
+  const d = QUIZ.deltas;
+  const steps = d.filter(c => c.counted).length;
+  const mastered = d.filter(c => c.counted && c.after === MASTERED()).length;
+  const slipped = d.filter(c => c.before > 0 && c.after === 0).length;
+  const already = d.filter(c => !c.counted && c.after > 0 && c.after === c.before).length;
 
   app.innerHTML = `
     <div class="card result-hero">
@@ -831,6 +972,12 @@ function renderResults() {
       <div class="big">${score} / ${total}</div>
       <div>${Math.round(pct * 100)}% · ${fmtTime(seconds)}
         ${QUIZ.exam ? `<span class="badge ${passed ? "ok" : "bad"}">${passed ? "✓ PASS" : "✗ FAIL"} (need ${Math.ceil(total * PASS_RATIO)})</span>` : ""}</div>
+      <div class="result-progress">
+        <span class="${steps ? "good" : ""}"><b>+${steps}</b> step${steps === 1 ? "" : "s"}</span>
+        <span class="${mastered ? "good" : ""}"><b>${mastered}</b> newly mastered</span>
+        <span class="${slipped ? "bad" : ""}"><b>${slipped}</b> slipped back</span>
+        ${already ? `<span class="muted"><b>${already}</b> already counted today</span>` : ""}
+      </div>
       <div style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
         ${wrong.length ? `<button class="primary" id="retry">Practise the ${wrong.length} I got wrong</button>` : ""}
         <a class="btn" href="#/">Dashboard</a>
@@ -859,8 +1006,29 @@ function reviewItem(q, r) {
 const BANK = { search: "", filter: "all", sort: "test", dir: 1 };
 
 const countsOf = q => q.counts || { right: 0, wrong: 0 };
-// State order for sorting: what needs work first.
-const LEVEL_ORDER = { "To fix": 0, Learning: 1, New: 2, Mastered: 3 };
+// State order for sorting: New, then Learning by step, then Mastered.
+const stateRank = q => ({ New: 0, Learning: 1 + step(q), Mastered: 1 + MASTERED() }[state(q)]);
+
+const BANK_FILTERS = [
+  ["all", "All questions"],
+  ["Progress", [["state:New", "New"], ["state:Learning", "Learning (any step)"], ["step:0", "Learning · step 0"],
+    ["step:1", "Learning · step 1"], ["step:2", "Learning · step 2"], ["state:Mastered", "Mastered"],
+    ["due", "Ready to count now"]]],
+  ["Marks", [["missed", "Missed before"], ["fix", "Missed, not yet mastered"], ["testwrong", "Wrong in a PDF test"],
+    ["flagged", "Flagged"], ["noted", "With a note"]]],
+];
+
+// One definition of every filter, shared by the bank and the dashboard ladder.
+function bankMatches(q, f) {
+  if (f === "all") return true;
+  if (f.startsWith("state:")) return state(q) === f.slice(6);
+  if (f.startsWith("step:")) return state(q) === "Learning" && step(q) === Number(f.slice(5));
+  if (f.startsWith("test:")) return q.sources.some(s => s.test === f.slice(5));
+  return {
+    due: isDue, missed: missedBefore, fix: needsFix, testwrong: q => wasWrongInTest(q),
+    flagged: q => q.flagged, noted: q => !!q.note,
+  }[f]?.(q) ?? true;
+}
 
 // Each sort's natural first direction: counts start with the biggest numbers.
 const BANK_SORTS = [
@@ -879,9 +1047,9 @@ function renderBank(preset) {
     <div class="filters">
       <input type="search" id="bank-search" placeholder="Search questions, answers, explanations…" value="${esc(BANK.search)}">
       <select id="bank-filter" aria-label="Filter">
-        ${[["all", "All questions"], ["fix", "Mistakes to fix"], ["testwrong", "Wrong in a test"], ["due", "Due for review"],
-           ["mastered", "Mastered"], ["new", "Never practised"], ["flagged", "Flagged"], ["noted", "With a note"]]
-          .map(([v, l]) => `<option value="${v}" ${BANK.filter === v ? "selected" : ""}>${l}</option>`).join("")}
+        ${BANK_FILTERS.map(([v, l]) => Array.isArray(l)
+          ? `<optgroup label="${v}">${l.map(([v2, l2]) => `<option value="${v2}" ${BANK.filter === v2 ? "selected" : ""}>${l2}</option>`).join("")}</optgroup>`
+          : `<option value="${v}" ${BANK.filter === v ? "selected" : ""}>${l}</option>`).join("")}
         <optgroup label="By test">
           ${tests.map(t => `<option value="test:${t.id}" ${BANK.filter === "test:" + t.id ? "selected" : ""}>${esc(t.title)}</option>`).join("")}
         </optgroup>
@@ -914,14 +1082,7 @@ function bankFiltered() {
   const f = BANK.filter;
   const terms = BANK.search.toLowerCase().split(/\s+/).filter(Boolean);
   let qs = allQs().filter(q => {
-    if (f === "fix" && !needsFix(q)) return false;
-    if (f === "testwrong" && !wasWrongInTest(q)) return false;
-    if (f === "due" && !isDue(q)) return false;
-    if (f === "mastered" && !isMastered(q)) return false;
-    if (f === "new" && q.stats.seen) return false;
-    if (f === "flagged" && !q.flagged) return false;
-    if (f === "noted" && !q.note) return false;
-    if (f.startsWith("test:") && !q.sources.some(s => s.test === f.slice(5))) return false;
+    if (!bankMatches(q, f)) return false;
     if (terms.length) {
       const hay = [q.text, ...q.options, q.explanation, q.note].join(" ").toLowerCase();
       if (!terms.every(t => hay.includes(t))) return false;
@@ -931,7 +1092,7 @@ function bankFiltered() {
   const byTest = (a, b) => (testOrder[a.id] ?? 1e9) - (testOrder[b.id] ?? 1e9);
   const sorters = {
     test: byTest,
-    state: (a, b) => LEVEL_ORDER[level(a).label] - LEVEL_ORDER[level(b).label],
+    state: (a, b) => stateRank(a) - stateRank(b),
     right: (a, b) => countsOf(a).right - countsOf(b).right,
     wrong: (a, b) => countsOf(a).wrong - countsOf(b).wrong,
     weak: (a, b) => weakness(a) - weakness(b),
@@ -964,7 +1125,8 @@ function bankItem(q) {
         <span class="${c.right ? "c-right" : ""}" aria-label="${c.right} right">✓ ${c.right}</span>
         <span class="${c.wrong ? "c-wrong" : ""}" aria-label="${c.wrong} wrong">✗ ${c.wrong}</span>
       </span>
-      <span class="badge ${lv.cls}">${lv.label}</span>
+      ${missedBefore(q) ? `<span class="mark-missed-badge" title="Missed before: got wrong at least once">missed</span>` : ""}
+      <span class="badge ${lv.cls}">${lv.label === "Learning" ? `Learning · ${step(q)}/${MASTERED()}` : lv.label}</span>
     </summary>
     <ul>${q.options.map((o, i) => `<li class="${q.correct.includes(i) ? "is-correct" : ""}">${q.correct.includes(i) ? "✓ " : ""}${esc(o)}</li>`).join("")}</ul>
     ${q.explanation ? `<p class="small muted">${esc(q.explanation)}</p>` : ""}
@@ -972,7 +1134,7 @@ function bankItem(q) {
     <p class="small muted">
       ${q.sources.map(s => s.result === "manual" ? "added by you" : `${esc(testShort(s.test))}: ${s.result === "incorrect" ? "✗ wrong" : "✓ right"}`).join(" · ")}
       · practised ${q.stats.seen}× ${acc === null ? "" : `(${Math.round(acc * 100)}% right)`}
-      · box ${q.stats.box}/${DB.config.mastered_box} to master · next review ${relDays(q.stats.due)}
+      · last answered ${relAgo(q.stats.last_seen)} · ${isDue(q) ? "a right answer counts now" : `already counted ${relAgo(q.stats.last_counted)}`}
       ${hist.length ? `<span class="dots" title="last answers, oldest first">${hist.map(h => `<i class="${h.ok ? "ok" : "bad"}"></i>`).join("")}</span>` : ""}
     </p>
     <div class="actions">

@@ -58,17 +58,23 @@ class ApiTest(unittest.TestCase):
         db = self.db()
         self.assertEqual(len(db["questions"]), 2)
         self.assertIn("test-1", db["tests"])
-        self.assertEqual(db["config"]["mastered_box"], server.MASTERED_BOX)
+        self.assertEqual(db["config"]["mastered_streak"], server.MASTERED_STREAK)
+        # CAPITAL was wrong in its PDF: step 0, marked, counted once as wrong.
+        q = db["questions"][self.qid]
+        self.assertEqual((q["stats"]["streak"], q["flags"]["missed"], q["counts"]), (0, True, {"right": 0, "wrong": 1}))
 
-    def test_answer_updates_progress_and_counters(self):
+    def test_answer_updates_progress_counters_and_today(self):
         status, q = self.call("POST", "/api/answer", {"qid": self.qid, "correct": True, "chosen": [1], "count": True})
         self.assertEqual(status, 200)
-        self.assertEqual((q["stats"]["box"], q["counts"]), (1, {"right": 1, "wrong": 0}))
-        self.assertEqual(self.db()["questions"][self.qid]["stats"]["box"], 1, "saved to disk")
+        self.assertEqual((q["stats"]["streak"], q["counts"]), (1, {"right": 1, "wrong": 1}))
+        self.assertTrue(q["stats"]["history"][-1]["counted"])
+        db = self.db()
+        self.assertEqual(db["questions"][self.qid]["stats"]["streak"], 1, "saved to disk")
+        self.assertEqual(list(db["daily"].values())[0]["steps"], 1)
 
     def test_answer_without_count_flag_leaves_counters(self):
         _, q = self.call("POST", "/api/answer", {"qid": self.qid, "correct": False, "chosen": [0]})
-        self.assertEqual(q["counts"], {"right": 0, "wrong": 0})
+        self.assertEqual(q["counts"], {"right": 0, "wrong": 1})
 
     def test_answer_to_unknown_question_is_rejected(self):
         self.assertEqual(self.call("POST", "/api/answer", {"qid": "nope", "correct": True})[0], 400)
@@ -97,14 +103,20 @@ class ApiTest(unittest.TestCase):
         _, q = self.call("PATCH", f"/api/question/{self.qid}", {"reset_stats": True})
         self.assertEqual((q["stats"]["seen"], q["counts"]["right"]), (0, 1))
 
-    def test_reset_all_progress_keeps_counters_and_questions(self):
+    def test_reset_progress_keeps_counters_and_questions(self):
         self.call("POST", "/api/answer", {"qid": self.qid, "correct": True, "chosen": [1], "count": True})
         self.call("POST", "/api/session", {"mode": "fix", "score": 1, "total": 1, "answers": []})
-        self.assertEqual(self.call("POST", "/api/reset-progress")[0], 200)
+        self.assertEqual(self.call("POST", "/api/reset-progress", {})[0], 200)
         db = self.db()
-        self.assertEqual(db["sessions"], [])
+        self.assertEqual((db["sessions"], db["daily"]), ([], {}))
         q = db["questions"][self.qid]
-        self.assertEqual((q["stats"]["box"], q["counts"]["right"]), (0, 1))  # back to box 0: wrong in the test
+        self.assertEqual((q["stats"]["streak"], q["flags"]["missed"]), (0, True))  # as after import: wrong in its PDF
+        self.assertEqual(q["counts"], {"right": 1, "wrong": 1})
+
+    def test_start_from_blank(self):
+        self.call("POST", "/api/reset-progress", {"blank": True})
+        q = self.db()["questions"][self.qid]
+        self.assertEqual((q["flags"], q["counts"]), ({"practised": False, "missed": False}, {"right": 0, "wrong": 0}))
 
     def test_session_is_recorded(self):
         _, s = self.call("POST", "/api/session", {"mode": "exam", "label": "Mock exam", "score": 20, "total": 24,
