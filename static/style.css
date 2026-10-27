@@ -132,6 +132,8 @@ textarea { width: 100%; min-height: 70px; resize: vertical; }
 /* "Missed before" tag: a red square like the state tags beside it. */
 .mark-missed { background: var(--bad); }
 
+.page-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.page-head h1 { margin: 0; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: .5em; }
 .section-head h2 { margin: 0; }
 

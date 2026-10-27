@@ -1057,7 +1057,7 @@ function renderBank(preset) {
   if (preset) BANK.filter = decodeURIComponent(preset);
   const tests = Object.values(DB.tests).sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
   app.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+    <div class="page-head">
       <h1>Question bank</h1>
       <button class="primary" id="add-q">+ Add question</button>
     </div>
