@@ -15,9 +15,9 @@
   --warn-soft: #fdf3d3;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
-  /* Progress ladder: New neutral, Learning steps one amber hue light -> dark, Mastered green.
+  /* Progress ladder: New neutral, Learning steps one blue hue light -> dark, Mastered green.
      Evenly spaced in OKLab lightness; adjacent pairs checked for normal and colour-blind separation. */
-  --st-new: #ebeff4; --st-l0: #f5cb70; --st-l1: #d78c29; --st-l2: #a3591c; --st-mastered: #104f29;
+  --st-new: #f1f4f7; --st-l0: #99cbf1; --st-l1: #579adc; --st-l2: #3063b8; --st-mastered: #30a556;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -25,7 +25,7 @@
     --bg: #0f1218; --surface: #171b23; --surface-2: #202631; --text: #e7eaf0; --muted: #98a2b3;
     --border: #2c3442; --accent: #7aa2ff; --accent-soft: #1d2a4a; --ok: #4ade80; --ok-soft: #12301f;
     --bad: #f87171; --bad-soft: #3a1717; --warn: #facc15; --warn-soft: #3a3110; --shadow: none;
-    --st-new: #333840; --st-l0: #7b5117; --st-l1: #b27923; --st-l2: #e3ad4b; --st-mastered: #a1f4be;
+    --st-new: #2a2e34; --st-l0: #365987; --st-l1: #4587c8; --st-l2: #6ebdf3; --st-mastered: #81f0a3;
     color-scheme: dark;
   }
 }
@@ -33,7 +33,7 @@
   --bg: #0f1218; --surface: #171b23; --surface-2: #202631; --text: #e7eaf0; --muted: #98a2b3;
   --border: #2c3442; --accent: #7aa2ff; --accent-soft: #1d2a4a; --ok: #4ade80; --ok-soft: #12301f;
   --bad: #f87171; --bad-soft: #3a1717; --warn: #facc15; --warn-soft: #3a3110; --shadow: none;
-  --st-new: #333840; --st-l0: #7b5117; --st-l1: #b27923; --st-l2: #e3ad4b; --st-mastered: #a1f4be;
+  --st-new: #2a2e34; --st-l0: #365987; --st-l1: #4587c8; --st-l2: #6ebdf3; --st-mastered: #81f0a3;
   color-scheme: dark;
 }
 
@@ -129,7 +129,11 @@ textarea { width: 100%; min-height: 70px; resize: vertical; }
 .seg-l1-stroke { stroke: var(--st-l1); }
 .seg-l2-stroke { stroke: var(--st-l2); }
 .seg-mastered-stroke { stroke: var(--st-mastered); }
-.mark-missed { background: transparent; border: 2px solid var(--bad); }
+/* "Missed before" tag: a red square like the state tags beside it. */
+.mark-missed { background: var(--bad); }
+
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: .5em; }
+.section-head h2 { margin: 0; }
 
 /* today */
 .today-card, .ladder-card { margin-bottom: 16px; }
@@ -166,7 +170,7 @@ textarea { width: 100%; min-height: 70px; resize: vertical; }
 .learning-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .learning-row > span { flex: 1 1 200px; }
 .mark-missed-badge {
-  font-size: .72rem; padding: 0 7px; border-radius: 99px; border: 1px solid var(--bad); color: var(--bad); white-space: nowrap;
+  font-size: .72rem; padding: 0 7px; border-radius: 99px; border: 1px dashed var(--muted); color: var(--muted); white-space: nowrap;
 }
 
 .result-progress { display: flex; gap: 8px 18px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }

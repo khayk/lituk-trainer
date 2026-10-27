@@ -101,7 +101,7 @@ const accuracy = q => (q.stats.seen ? q.stats.right / q.stats.seen : null);
 const isMulti = q => q.correct.length > 1;
 
 const state = q => (isMastered(q) ? "Mastered" : q.flags?.practised ? "Learning" : "New");
-const STATE_CLASS = { New: "", Learning: "warn", Mastered: "ok" };
+const STATE_CLASS = { New: "", Learning: "accent", Mastered: "ok" };
 
 function level(q) {
   const label = state(q);
@@ -278,8 +278,12 @@ function renderHome() {
     </section>
 
     <section>
-      <h2>Your tests <span class="badge">${tests.length}</span></h2>
-      <div class="card table-wrap" id="tests-table"></div>
+      <div class="section-head">
+        <h2>Your tests <span class="badge">${tests.length}</span></h2>
+        <button class="small" id="tests-toggle" aria-expanded="${TESTS_OPEN}" aria-controls="tests-table">
+          ${TESTS_OPEN ? "Hide tests ▴" : "Show tests ▾"}</button>
+      </div>
+      <div class="card table-wrap" id="tests-table" ${TESTS_OPEN ? "" : "hidden"}></div>
     </section>
 
     ${importSection()}
@@ -302,7 +306,15 @@ function renderHome() {
     const size = $(`[data-size="${key}"]`)?.value ?? MODES[key].size;
     startQuiz(key, size === "all" ? Infinity : Number(size));
   });
-  drawTestsTable();
+  if (TESTS_OPEN) drawTestsTable();
+  $("#tests-toggle").onclick = () => {
+    TESTS_OPEN = !TESTS_OPEN;
+    const btn = $("#tests-toggle");
+    btn.setAttribute("aria-expanded", TESTS_OPEN);
+    btn.textContent = TESTS_OPEN ? "Hide tests ▴" : "Show tests ▾";
+    $("#tests-table").hidden = !TESTS_OPEN;
+    if (TESTS_OPEN) drawTestsTable();
+  };
   bindExamCard();
   $("#rescan-force").onclick = () => scan(true);
   const reset = async (blank, message) => {
@@ -423,6 +435,8 @@ function ladderCard(qs) {
 }
 
 let LADDER_OPEN = false;
+// "Your tests" starts closed on every page load and remembers its state while the app is open.
+let TESTS_OPEN = false;
 
 function questionsFor(key) {
   return allQs().filter(q => bankMatches(q, key));
@@ -599,7 +613,7 @@ function modeCard(key, m, count) {
   const sizes = m.fixedSize ? [] : [10, 20, 30, "all"];
   const disabled = !count;
   return `<div class="card mode">
-    <h3>${esc(m.title)} <span class="badge ${key === "fix" && count ? "bad" : ""}">${count}</span></h3>
+    <h3>${esc(m.title)} <span class="badge">${count}</span></h3>
     <p>${esc(m.desc)}</p>
     <div class="row">
       ${sizes.length ? `<select data-size="${key}" aria-label="Number of questions">
@@ -773,7 +787,7 @@ function renderQuiz() {
         · <span class="badge ${level(q).cls}">${level(q).label}</span>
       </div>
       <div class="question">${esc(q.text)}</div>
-      ${multi ? `<div class="badge accent" style="margin-bottom:10px">Select ${q.correct.length} answers</div>` : ""}
+      ${multi ? `<div class="badge accent" style="margin-bottom:10px">Select ${q.correct.length} answers${checked ? "" : ` · ${sel.length} chosen${sel.length > q.correct.length ? " – remove one" : ""}`}</div>` : ""}
       <div class="options">${optionHtml}</div>
       ${feedback}
       <div class="quiz-actions">
@@ -783,7 +797,7 @@ function renderQuiz() {
           ? (pos < total - 1 ? `<button class="primary" id="next">Next →</button>` : `<button class="primary" id="submit">Submit exam</button>`)
           : checked
             ? `<button class="primary" id="next">${pos < total - 1 ? "Next →" : "See results"}</button>`
-            : `<button class="primary" id="check" ${sel.length ? "" : "disabled"}>Check</button>`}
+            : `<button class="primary" id="check" ${readyToCheck(q, sel) ? "" : "disabled"}>Check</button>`}
       </div>
       ${QUIZ.exam ? `<div class="navgrid">${QUIZ.queue.map((_, i) => `<button class="${QUIZ.selected[i]?.length ? "answered" : ""} ${i === pos ? "current" : ""} ${QUIZ.marked.has(i) ? "flag" : ""}" data-jump="${i}" aria-label="Question ${i + 1}">${i + 1}</button>`).join("")}</div>
         ${pos < total - 1 ? `<div style="margin-top:12px"><button id="submit">Submit exam</button></div>` : ""}` : ""}
@@ -807,7 +821,7 @@ function renderQuiz() {
     else if (e.key === "Enter") {
       e.preventDefault();
       if (QUIZ.exam) (pos < total - 1 ? next() : submitExam());
-      else checked ? next() : (sel.length && check());
+      else checked ? next() : (readyToCheck(q, sel) && check());
     } else if (e.key.toLowerCase() === "f") toggleFlag();
     else if (QUIZ.exam && e.key === "ArrowRight" && pos < total - 1) go(pos + 1);
     else if (QUIZ.exam && e.key === "ArrowLeft" && pos > 0) go(pos - 1);
@@ -865,10 +879,13 @@ function go(pos) {
   window.scrollTo({ top: 0 });
 }
 
+// A question can only be checked with exactly as many options chosen as it has answers.
+const readyToCheck = (q, sel) => sel.length === q.correct.length;
+
 async function check() {
   const pos = QUIZ.pos, q = currentQ();
   const sel = QUIZ.selected[pos] || [];
-  if (!sel.length) return;
+  if (!readyToCheck(q, sel)) return;
   const ok = sameSet(sel, q.correct);
   QUIZ.checked[pos] = true;
   // Only the first answer to a question in a session goes into its lifetime counters.
